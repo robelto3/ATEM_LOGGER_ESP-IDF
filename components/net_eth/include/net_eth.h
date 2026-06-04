@@ -18,7 +18,6 @@ typedef struct {
     bool got_ip;
     char ip[16];
     char netmask[16];
-    char gateway[16];
 } net_eth_status_t;
 
 esp_err_t net_eth_init_static(void);

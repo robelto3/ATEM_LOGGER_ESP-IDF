@@ -75,18 +75,15 @@ static void serial_console_print_ip(void)
 {
     char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char netmask[NET_CONFIG_IP_STR_LEN] = {0};
-    char gateway[NET_CONFIG_IP_STR_LEN] = {0};
     char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
 
     net_config_get_server_ip_string(server_ip, sizeof(server_ip));
     net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
     net_config_get_netmask_string(netmask, sizeof(netmask));
-    net_config_get_gateway_string(gateway, sizeof(gateway));
 
     printf("ESP/server IP: %s\n", server_ip);
     printf("ATEM IP:       %s  (change on web /network)\n", atem_ip);
     printf("Netmask:       %s\n", netmask);
-    printf("Gateway:       %s\n", gateway);
 }
 
 static void serial_console_process_line(char *line)
@@ -130,12 +127,9 @@ static void serial_console_process_line(char *line)
         esp_err_t ret = net_config_set_server_ip_string(ip_text);
         if (ret == ESP_OK) {
             char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
-            char gateway[NET_CONFIG_IP_STR_LEN] = {0};
             net_config_get_server_ip_string(server_ip, sizeof(server_ip));
-            net_config_get_gateway_string(gateway, sizeof(gateway));
 
             printf("Server IP saved: %s\n", server_ip);
-            printf("Gateway will be: %s\n", gateway);
             printf("Restart ESP to apply, or type: reboot\n");
         } else if (ret == ESP_ERR_INVALID_ARG) {
             printf("Invalid IP address. Example: ip 192.168.1.250\n");

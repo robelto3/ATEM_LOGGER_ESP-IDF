@@ -185,9 +185,16 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".rtc-link{text-decoration:none;cursor:pointer;}"
         ".rtc-link:hover{color:#7cc7ff;text-decoration:none;}"
         ".rtc-time{display:inline-block;margin-left:28px;}"
-        ".active-show{color:#ff8a8a;font-weight:bold;}"
+        ".active-show{color:#81f781;font-weight:bold;}"
         ".home-title{color:#eee;text-decoration:none;}"
         ".home-title:hover{color:#7cc7ff;text-decoration:none;}"
+        ".home-top{display:inline-block;max-width:100%;}"
+        ".home-head{display:flex;align-items:baseline;justify-content:space-between;gap:42px;flex-wrap:wrap;margin:0 0 12px 0;}"
+        ".home-head h2{margin:0;}"
+        ".home-head .rtc-link{color:#eee;font-size:21px;}"
+        ".home-head .rtc-link:hover{text-decoration:underline;}"
+        ".home-head .rtc-link:hover .rtc-time{text-decoration:underline;}"
+        ".home-top .btn:last-child{margin-right:0;}"
         ".protect-check{accent-color:crimson;min-width:0;width:auto;margin:0;}"
         ".selectcheck{accent-color:crimson;min-width:0;width:auto;margin:0;}"
         ".protect-label{white-space:nowrap;}"
@@ -205,6 +212,8 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".delete-cell{padding-left:10px;white-space:nowrap;}"
         ".current-row{height:56px;}"
         ".disabled-delete{color:#aaa;text-decoration:line-through;}"
+        ".current-file{text-decoration:none;}"
+        ".current-file:hover{text-decoration:underline;}"
         ".copy-title{cursor:pointer;}"
         ".copy-title:hover{color:#fff;}"
         ".copy-title.copied{color:#7fe08a;}"
@@ -213,7 +222,7 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         "pre{background:#050505;border:1px solid #333;border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;}"
         ".btn{display:inline-block;background:#2c2c2c;border:1px solid #555;border-radius:8px;padding:8px 12px;margin:4px 8px 4px 0;}"
         "button.btn{appearance:none;-webkit-appearance:none;cursor:pointer;color:#eee;font-family:inherit;font-size:14px;line-height:normal;}button.btn:disabled{opacity:.45;cursor:not-allowed;}"
-        "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;margin-top:0;}.home-card .btn{font-size:14px;line-height:normal;}"
+        "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:14px;line-height:normal;}"
         ".btn-active{background:#3a101a;border-color:crimson;color:#fff;font-weight:bold;}.btn-active:hover{background:#4a1420;text-decoration:none;}.del{color:#ff7777;}.danger{background:#3a1b1b;border-color:#884444;color:#ffb0b0;}"
         ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}label{display:block;margin-top:8px;}small{color:#aaa;}"
         ".show-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px 0;}"
@@ -849,15 +858,17 @@ static void web_send_status_card(httpd_req_t *req)
     char line[192];
 
     web_send_chunk(req, "<div class='card home-card'>");
+    web_send_chunk(req, "<div class='home-top'>");
+    web_send_chunk(req, "<div class='home-head'>");
     web_send_chunk(req, "<h2>Home</h2>");
 
     if (state.rtc_valid) {
-        web_send_chunk(req, "<p><a id='home-rtc-link' class='rtc-link ok' href='#' onclick='return syncRtcFromBrowserConfirm();'><b>");
+        web_send_chunk(req, "<a id='home-rtc-link' class='rtc-link ok' href='#' title='Synchronizovat datum a čas' onclick='return syncRtcFromBrowserConfirm();'><b>");
 
         snprintf(
             line,
             sizeof(line),
-            "<span id='home-rtc-date'>%02u.%02u.%04u</span>",
+            "<span id='home-rtc-date' title='Synchronizovat datum a čas'>%02u.%02u.%04u</span>",
             state.rtc.date,
             state.rtc.month,
             state.rtc.year
@@ -867,24 +878,36 @@ static void web_send_status_card(httpd_req_t *req)
         snprintf(
             line,
             sizeof(line),
-            "<span id='home-rtc-time' class='rtc-time'>%02u:%02u:%02u</span>",
+            "<span id='home-rtc-time' class='rtc-time' title='Synchronizovat datum a čas'>%02u:%02u:%02u</span>",
             state.rtc.hours,
             state.rtc.minutes,
             state.rtc.seconds
         );
         web_send_chunk(req, line);
 
-        web_send_chunk(req, "</b></a></p>");
+        web_send_chunk(req, "</b></a>");
     } else {
-        web_send_chunk(req, "<p><a id='home-rtc-link' class='rtc-link bad' href='#' onclick='return syncRtcFromBrowserConfirm();'><b>");
-        web_send_chunk(req, "<span id='home-rtc-date'>---</span><span id='home-rtc-time' class='rtc-time'></span>");
-        web_send_chunk(req, "</b></a></p>");
+        web_send_chunk(req, "<a id='home-rtc-link' class='rtc-link bad' href='#' title='Synchronizovat datum a čas' onclick='return syncRtcFromBrowserConfirm();'><b>");
+        web_send_chunk(req, "<span id='home-rtc-date' title='Synchronizovat datum a čas'>---</span><span id='home-rtc-time' class='rtc-time' title='Synchronizovat datum a čas'></span>");
+        web_send_chunk(req, "</b></a>");
     }
+    web_send_chunk(req, "</div>");
+
+    web_send_chunk(req, "<p>");
+    web_send_chunk(req, "<a class='btn' href='/files'>Soubory na SD kartě</a> ");
+    web_send_chunk(req, "<a class='btn' href='/shows'>Názvy pořadů</a> ");
+    web_send_chunk(req, "<a class='btn' href='/network'>Nastavení</a> ");
+    web_send_chunk(req, "<a class='btn' href='/about'>About</a>");
+    web_send_chunk(req, "</p>");
+    web_send_chunk(req, "</div>");
+
+    char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
+    net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
 
     snprintf(
         line,
         sizeof(line),
-        "<p>Ethernet: <span class='%s'>%s</span> &nbsp; IP: <b>%s</span></p>",
+        "<p>Ethernet: <span class='%s'>%s</span> &nbsp; IP: <b>%s</b></p>",
         eth.link_up ? "ok" : "bad",
         eth.link_up ? "OK" : "---",
         eth.ip
@@ -894,31 +917,33 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>SD karta: <span class='%s'>%s</span></p>",
-        sd_storage_is_mounted() ? "ok" : "bad",
-        sd_storage_is_mounted() ? "OK" : "---"
+        "<p>ATEM: <span id='home-atem' class='%s'>%s</span> &nbsp; IP: <b>",
+        state.atem_connected ? "ok" : "bad",
+        state.atem_connected ? "OK" : "---"
     );
     web_send_chunk(req, line);
-
-    char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
-    char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
-    net_config_get_server_ip_string(server_ip, sizeof(server_ip));
-    net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
-
-    web_send_chunk(req, "<p>ESP IP: <b>");
-    web_send_html_escaped(req, server_ip);
-    web_send_chunk(req, "</b></p>");
-
-    web_send_chunk(req, "<p>ATEM IP: <b>");
     web_send_html_escaped(req, atem_ip);
     web_send_chunk(req, "</b></p>");
 
     snprintf(
         line,
         sizeof(line),
-        "<p>ATEM: <span id='home-atem' class='%s'>%s</span></p>",
-        state.atem_connected ? "ok" : "bad",
-        state.atem_connected ? "OK" : "---"
+        "<p>LTC: <span id='home-ltc' class='%s'>%s</span> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
+        state.ltc_valid ? "ok" : "bad",
+        state.ltc_valid ? "OK" : "---",
+        state.tc.hours,
+        state.tc.minutes,
+        state.tc.seconds,
+        state.tc.frames
+    );
+    web_send_chunk(req, line);
+
+    snprintf(
+        line,
+        sizeof(line),
+        "<p>SD karta: <span class='%s'>%s</span></p>",
+        sd_storage_is_mounted() ? "ok" : "bad",
+        sd_storage_is_mounted() ? "OK" : "---"
     );
     web_send_chunk(req, line);
 
@@ -938,25 +963,14 @@ static void web_send_status_card(httpd_req_t *req)
     );
     web_send_chunk(req, line);
 
-    snprintf(
-        line,
-        sizeof(line),
-        "<p>LTC: <span id='home-ltc' class='%s'>%s</span> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
-        state.ltc_valid ? "ok" : "bad",
-        state.ltc_valid ? "OK" : "---",
-        state.tc.hours,
-        state.tc.minutes,
-        state.tc.seconds,
-        state.tc.frames
-    );
-    web_send_chunk(req, line);
-
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
     snprintf(
         line,
         sizeof(line),
-        "<p>PVW Tally: <span id='home-pvw-tally' class='%s'><b>%s</b></span></p>",
+        "<p>PVW Tally: <a id='home-pvw-tally' class='%s' href='/save_preview_tally?%sback=home' title='%s'><b>%s</b></a></p>",
         preview_tally_enabled ? "ok" : "bad",
+        preview_tally_enabled ? "" : "enabled=1&amp;",
+        preview_tally_enabled ? "Vypnout" : "Zapnout",
         preview_tally_enabled ? "ON" : "OFF"
     );
     web_send_chunk(req, line);
@@ -964,21 +978,13 @@ static void web_send_status_card(httpd_req_t *req)
     char active_show[SHOW_CONFIG_NAME_MAX_LEN] = {0};
     show_config_get_active_name(active_show, sizeof(active_show));
 
-    web_send_chunk(req, "<p>Aktivní pořad: <a class='active-show' href='/shows'>");
+    web_send_chunk(req, "<p>Aktivní pořad: <a class='active-show' href='/shows' title='Změnit'>");
     web_send_html_escaped(req, active_show);
     web_send_chunk(req, "</a></p>");
 
-    web_send_chunk(req, "<p>Aktuální soubor: <b id='home-file'>");
+    web_send_chunk(req, "<p>Aktuální soubor: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
     web_send_html_escaped(req, state.current_filename);
-    web_send_chunk(req, "</b> &nbsp; "
-                       "<a class='btn' href='/new_file' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">Uzavřít a vytvořit nový</a></p>");
-
-    web_send_chunk(req, "<p>");
-    web_send_chunk(req, "<a class='btn' href='/files'>Soubory na SD kartě</a> ");
-    web_send_chunk(req, "<a class='btn' href='/shows'>Názvy pořadů</a> ");
-    web_send_chunk(req, "<a class='btn' href='/network'>Nastavení</a> ");
-    web_send_chunk(req, "<a class='btn' href='/about'>About</a>");
-    web_send_chunk(req, "</p>");
+    web_send_chunk(req, "</a></b></p>");
 
     web_send_chunk(req, "</div>");
 }
@@ -1167,12 +1173,13 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "var d=new Date();"
         "var dt=formatBrowserDateTime(d);"
         "if(!confirm('Opravdu synchronizovat RTC z času prohlížeče?\\n\\nNový čas: '+dt)){return false;}"
-        "window.location.href=makeRtcSyncUrl(d);"
+        "window.location.href=makeRtcSyncUrl(new Date());"
         "return false;"
         "}"
         "function setText(id,text){var e=document.getElementById(id);if(e){e.textContent=text;}}"
         "function setOkBad(id,ok){var e=document.getElementById(id);if(e){e.textContent=ok?'OK':'---';e.className=ok?'ok':'bad';}}"
         "function setOnOff(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';}}"
+        "function setPreviewTally(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';e.href=on?'/save_preview_tally?back=home':'/save_preview_tally?enabled=1&back=home';e.title=on?'Vypnout':'Zapnout';}}"
         "function updateHomeState(){"
         "fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){"
         "setOkBad('home-atem',!!s.atem);"
@@ -1180,7 +1187,7 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "setText('home-pgm',s.pgm);"
         "setText('home-pvw',s.pvw);"
         "setText('home-tc',s.tc);"
-        "setOnOff('home-pvw-tally',!!s.pvw_tally);"
+        "setPreviewTally('home-pvw-tally',!!s.pvw_tally);"
         "setText('home-file',s.file);"
         "var rtcLink=document.getElementById('home-rtc-link');"
         "var rtcDate=document.getElementById('home-rtc-date');"
@@ -1261,12 +1268,10 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char netmask[NET_CONFIG_IP_STR_LEN] = {0};
-    char gateway[NET_CONFIG_IP_STR_LEN] = {0};
 
     net_config_get_server_ip_string(server_ip, sizeof(server_ip));
     net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
     net_config_get_netmask_string(netmask, sizeof(netmask));
-    net_config_get_gateway_string(gateway, sizeof(gateway));
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
 
     web_send_html_header(req, "ATEM Logger - nastavení");
@@ -1289,8 +1294,6 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     web_send_chunk(req, "</form>");
     web_send_chunk(req, "<p><small>Maska je pevně ");
     web_send_html_escaped(req, netmask);
-    web_send_chunk(req, ", gateway se počítá jako ");
-    web_send_html_escaped(req, gateway);
     web_send_chunk(req, ".</small></p>");
     web_send_chunk(req, "<p><small>Po změně IP je nejčistší logger restartovat, aby se znovu rozběhl Ethernet, web i ATEM spojení.</small></p>");
     web_send_chunk(req, "</div>");
@@ -1302,7 +1305,10 @@ static esp_err_t web_network_handler(httpd_req_t *req)
 static esp_err_t web_save_preview_tally_handler(httpd_req_t *req)
 {
     char enabled_value[8] = {0};
+    char back_value[8] = {0};
     bool enabled = (web_get_query_value(req, "enabled", enabled_value, sizeof(enabled_value)) == ESP_OK);
+    bool back_home = (web_get_query_value(req, "back", back_value, sizeof(back_value)) == ESP_OK &&
+                      strcmp(back_value, "home") == 0);
 
     esp_err_t ret = net_config_set_preview_tally_enabled(enabled);
     if (ret != ESP_OK) {
@@ -1315,9 +1321,9 @@ static esp_err_t web_save_preview_tally_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/network");
+    httpd_resp_set_hdr(req, "Location", back_home ? "/" : "/network");
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
-    httpd_resp_sendstr(req, "Redirecting to settings");
+    httpd_resp_sendstr(req, back_home ? "Redirecting to Home" : "Redirecting to settings");
     return ESP_OK;
 }
 
@@ -2015,9 +2021,9 @@ static esp_err_t web_files_handler(httpd_req_t *req)
         if (is_protected) {
             web_send_chunk(req, " checked");
         }
-        web_send_chunk(req, " onchange=\"window.location.href='/protect?file=");
+        web_send_chunk(req, " onchange=\"if(!this.checked&&!confirm('Opravdu zrušit ochranu proti smazání?\\n\\nPo zrušení ochrany bude možné soubor smazat.')){this.checked=true;return;}window.location.href='/protect?file=");
         web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "&amp;state='+(this.checked?'1':'0')\">");
+        web_send_chunk(req, "&amp;state='+(this.checked?'1':'0')+(this.checked?'':'&amp;confirm=1')\">");
 
         web_send_chunk(req, "</td><td class='delete-cell'>");
         if (is_current_file) {

@@ -32,12 +32,10 @@ esp_err_t net_config_init(void);
 void net_config_get_server_ip(net_config_ip4_t *ip);
 void net_config_get_atem_ip(net_config_ip4_t *ip);
 void net_config_get_netmask(net_config_ip4_t *ip);
-void net_config_get_gateway(net_config_ip4_t *ip);
 
 void net_config_get_server_ip_string(char *out, size_t out_size);
 void net_config_get_atem_ip_string(char *out, size_t out_size);
 void net_config_get_netmask_string(char *out, size_t out_size);
-void net_config_get_gateway_string(char *out, size_t out_size);
 
 bool net_config_parse_ip4(const char *text, net_config_ip4_t *ip);
 void net_config_ip4_to_string(const net_config_ip4_t *ip, char *out, size_t out_size);

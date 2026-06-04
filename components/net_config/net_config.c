@@ -255,20 +255,6 @@ void net_config_get_netmask(net_config_ip4_t *ip)
     *ip = (net_config_ip4_t){255, 255, 255, 0};
 }
 
-void net_config_get_gateway(net_config_ip4_t *ip)
-{
-    if (!ip) {
-        return;
-    }
-
-    net_config_ip4_t server = {0};
-    net_config_get_server_ip(&server);
-
-    // Jednoduché pravidlo pro běžnou /24 síť:
-    // gateway = stejná síť, poslední oktet 1.
-    *ip = (net_config_ip4_t){server.a, server.b, server.c, 1};
-}
-
 void net_config_get_server_ip_string(char *out, size_t out_size)
 {
     net_config_ip4_t ip = {0};
@@ -287,13 +273,6 @@ void net_config_get_netmask_string(char *out, size_t out_size)
 {
     net_config_ip4_t ip = {0};
     net_config_get_netmask(&ip);
-    net_config_ip4_to_string(&ip, out, out_size);
-}
-
-void net_config_get_gateway_string(char *out, size_t out_size)
-{
-    net_config_ip4_t ip = {0};
-    net_config_get_gateway(&ip);
     net_config_ip4_to_string(&ip, out, out_size);
 }
 

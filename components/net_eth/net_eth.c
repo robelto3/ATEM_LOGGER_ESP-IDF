@@ -49,13 +49,11 @@ static void net_eth_copy_ip_strings_locked(const esp_netif_ip_info_t *ip_info)
     if (!ip_info) {
         net_config_get_server_ip_string(s_status.ip, sizeof(s_status.ip));
         net_config_get_netmask_string(s_status.netmask, sizeof(s_status.netmask));
-        net_config_get_gateway_string(s_status.gateway, sizeof(s_status.gateway));
         return;
     }
 
     snprintf(s_status.ip, sizeof(s_status.ip), IPSTR, IP2STR(&ip_info->ip));
     snprintf(s_status.netmask, sizeof(s_status.netmask), IPSTR, IP2STR(&ip_info->netmask));
-    snprintf(s_status.gateway, sizeof(s_status.gateway), IPSTR, IP2STR(&ip_info->gw));
 }
 
 static void net_eth_event_handler(void *arg,
@@ -134,7 +132,6 @@ static void net_eth_got_ip_handler(void *arg,
     ESP_LOGI(TAG, "Ethernet Got IP");
     ESP_LOGI(TAG, "IP:      " IPSTR, IP2STR(&ip_info->ip));
     ESP_LOGI(TAG, "Netmask: " IPSTR, IP2STR(&ip_info->netmask));
-    ESP_LOGI(TAG, "Gateway: " IPSTR, IP2STR(&ip_info->gw));
 }
 
 static esp_err_t net_eth_create_driver(void)
@@ -232,16 +229,14 @@ static esp_err_t net_eth_attach_static_ip(void)
 
     net_config_ip4_t server_ip = {0};
     net_config_ip4_t netmask = {0};
-    net_config_ip4_t gateway = {0};
 
     net_config_get_server_ip(&server_ip);
     net_config_get_netmask(&netmask);
-    net_config_get_gateway(&gateway);
 
     esp_netif_ip_info_t ip_info = {0};
     IP4_ADDR(&ip_info.ip, server_ip.a, server_ip.b, server_ip.c, server_ip.d);
     IP4_ADDR(&ip_info.netmask, netmask.a, netmask.b, netmask.c, netmask.d);
-    IP4_ADDR(&ip_info.gw, gateway.a, gateway.b, gateway.c, gateway.d);
+    IP4_ADDR(&ip_info.gw, 0, 0, 0, 0);
 
     ret = esp_netif_set_ip_info(s_eth_netif, &ip_info);
     if (ret != ESP_OK) {
@@ -268,7 +263,6 @@ esp_err_t net_eth_init_static(void)
     memset(&s_status, 0, sizeof(s_status));
     net_config_get_server_ip_string(s_status.ip, sizeof(s_status.ip));
     net_config_get_netmask_string(s_status.netmask, sizeof(s_status.netmask));
-    net_config_get_gateway_string(s_status.gateway, sizeof(s_status.gateway));
 
     esp_err_t ret = esp_netif_init();
     if (ret != ESP_OK) {
