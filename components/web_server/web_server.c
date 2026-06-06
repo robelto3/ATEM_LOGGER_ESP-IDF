@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -11,7 +12,6 @@
 #include <sys/stat.h>
 
 #include "app_state.h"
-#include "file_protect.h"
 #include "cut_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -34,6 +34,10 @@
 #define WEB_FILES_PER_PAGE     20
 #define WEB_MAX_SELECTED_DELETE 20
 #define WEB_FORM_BODY_MAX_LEN   2048
+#define WEB_ARCHIVE_DIR_NAME    "archive"
+#define WEB_ARCHIVE_DIR_PATH    SD_STORAGE_MOUNT_POINT "/" WEB_ARCHIVE_DIR_NAME
+#define WEB_TRASH_DIR_NAME      "trash"
+#define WEB_TRASH_DIR_PATH      SD_STORAGE_MOUNT_POINT "/" WEB_TRASH_DIR_NAME
 
 // Web server je pomalá/obslužná část projektu.
 // HTTP task držíme na Core 0, mimo rychlou ATEM/LTC část na Core 1.
@@ -48,7 +52,9 @@ static httpd_handle_t s_server = NULL;
 typedef enum {
     WEB_FILES_MODE_WITH_CUTS = 0,
     WEB_FILES_MODE_ALL,
-    WEB_FILES_MODE_EMPTY
+    WEB_FILES_MODE_EMPTY,
+    WEB_FILES_MODE_ARCHIVE,
+    WEB_FILES_MODE_TRASH
 } web_files_mode_t;
 
 static web_files_mode_t s_files_mode = WEB_FILES_MODE_WITH_CUTS;
@@ -56,6 +62,10 @@ static web_files_mode_t s_files_mode = WEB_FILES_MODE_WITH_CUTS;
 static const char *web_files_mode_query_value(web_files_mode_t mode)
 {
     switch (mode) {
+    case WEB_FILES_MODE_TRASH:
+        return "trash";
+    case WEB_FILES_MODE_ARCHIVE:
+        return "archive";
     case WEB_FILES_MODE_ALL:
         return "all";
     case WEB_FILES_MODE_EMPTY:
@@ -69,6 +79,10 @@ static const char *web_files_mode_query_value(web_files_mode_t mode)
 static const char *web_files_mode_label(web_files_mode_t mode)
 {
     switch (mode) {
+    case WEB_FILES_MODE_TRASH:
+        return "koš";
+    case WEB_FILES_MODE_ARCHIVE:
+        return "archiv";
     case WEB_FILES_MODE_ALL:
         return "všechny soubory";
     case WEB_FILES_MODE_EMPTY:
@@ -81,6 +95,10 @@ static const char *web_files_mode_label(web_files_mode_t mode)
 
 static bool web_files_mode_should_show(web_files_mode_t mode, int cut_count, bool is_current_file)
 {
+    if (mode == WEB_FILES_MODE_ARCHIVE || mode == WEB_FILES_MODE_TRASH) {
+        return true;
+    }
+
     if (is_current_file) {
         return true;
     }
@@ -109,6 +127,27 @@ static esp_err_t web_redirect_to_files(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Location", "/files");
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_sendstr(req, "Redirecting to /files");
+    return ESP_OK;
+}
+
+static esp_err_t web_redirect_to_files_location(httpd_req_t *req, bool archived, bool trashed)
+{
+    if (trashed) {
+        httpd_resp_set_status(req, "303 See Other");
+        httpd_resp_set_hdr(req, "Location", "/files?mode=trash");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_sendstr(req, "Redirecting to trash");
+        return ESP_OK;
+    }
+
+    if (!archived) {
+        return web_redirect_to_files(req);
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/files?mode=archive");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Redirecting to archive");
     return ESP_OK;
 }
 
@@ -165,6 +204,35 @@ static void web_send_json_escaped(httpd_req_t *req, const char *text)
     }
 }
 
+static void web_format_uint_spaces(uint32_t value, char *out, size_t out_size)
+{
+    char raw[16];
+    char formatted[24];
+    size_t raw_len;
+    size_t out_pos = 0;
+
+    if (!out || out_size == 0U) {
+        return;
+    }
+
+    snprintf(raw, sizeof(raw), "%lu", (unsigned long)value);
+    raw_len = strlen(raw);
+
+    for (size_t i = 0; i < raw_len && out_pos + 1U < sizeof(formatted); i++) {
+        size_t remaining = raw_len - i;
+        if (i > 0U && (remaining % 3U) == 0U) {
+            formatted[out_pos++] = ' ';
+            if (out_pos + 1U >= sizeof(formatted)) {
+                break;
+            }
+        }
+        formatted[out_pos++] = raw[i];
+    }
+
+    formatted[out_pos] = '\0';
+    snprintf(out, out_size, "%s", formatted);
+}
+
 static void web_send_html_header(httpd_req_t *req, const char *title)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -195,9 +263,7 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".home-head .rtc-link:hover{text-decoration:underline;}"
         ".home-head .rtc-link:hover .rtc-time{text-decoration:underline;}"
         ".home-top .btn:last-child{margin-right:0;}"
-        ".protect-check{accent-color:crimson;min-width:0;width:auto;margin:0;}"
         ".selectcheck{accent-color:crimson;min-width:0;width:auto;margin:0;}"
-        ".protect-label{white-space:nowrap;}"
         ".table-wrap{overflow-x:auto;max-width:100%;}"
         ".select-cell{text-align:center;width:32px;padding-left:4px;padding-right:4px;}"
         ".file-cell{white-space:nowrap;width:120px;padding-right:6px;}"
@@ -208,10 +274,18 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".download-cell{text-align:center;white-space:nowrap;width:85px;padding-left:8px;padding-right:8px;}"
         ".download-cell a{color:#7fe08a;}"
         ".download-cell a:hover{color:#a6f5ad;}"
-        ".protect-cell{text-align:center;padding-left:30px;padding-right:4px;width:90px;}"
-        ".delete-cell{padding-left:10px;white-space:nowrap;}"
+        ".archive-cell{text-align:center;white-space:nowrap;width:80px;padding-left:12px;padding-right:12px;}"
+        ".delete-cell{text-align:center;white-space:nowrap;padding-left:12px;padding-right:12px;}"
         ".current-row{height:56px;}"
+        ".files-table td{border-bottom:0;}"
+        ".files-table tr+tr td{border-top:0;}"
+        ".files-table tr:nth-child(even) td{background:#202020;}"
+        ".files-table tr:nth-child(odd) td{background:#171717;}"
+        ".files-table tr.current-row td{background:#262626;}"
+        ".files-table tr:hover td{background:#26313a;}"
+        ".files-table tr.current-row:hover td{background:#2b3741;}"
         ".disabled-delete{color:#aaa;text-decoration:line-through;}"
+        ".cut-count{color:#7cc7ff;}"
         ".current-file{text-decoration:none;}"
         ".current-file:hover{text-decoration:underline;}"
         ".copy-title{cursor:pointer;}"
@@ -282,18 +356,267 @@ static bool web_is_safe_filename(const char *filename)
     return true;
 }
 
-static esp_err_t web_make_file_path(const char *filename, char *path, size_t path_len)
+static esp_err_t web_make_file_path_for_location(const char *filename, bool archived, char *path, size_t path_len)
 {
     if (!web_is_safe_filename(filename) || !path || path_len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    int written = snprintf(path, path_len, "%s/%s", SD_STORAGE_MOUNT_POINT, filename);
+    int written = snprintf(
+        path,
+        path_len,
+        "%s/%s",
+        archived ? WEB_ARCHIVE_DIR_PATH : SD_STORAGE_MOUNT_POINT,
+        filename
+    );
     if (written <= 0 || written >= (int)path_len) {
         return ESP_ERR_NO_MEM;
     }
 
     return ESP_OK;
+}
+
+static esp_err_t web_make_file_path(const char *filename, char *path, size_t path_len)
+{
+    return web_make_file_path_for_location(filename, false, path, path_len);
+}
+
+static esp_err_t web_make_archive_file_path(const char *filename, char *path, size_t path_len)
+{
+    return web_make_file_path_for_location(filename, true, path, path_len);
+}
+
+static esp_err_t web_make_trash_file_path(const char *filename, char *path, size_t path_len)
+{
+    if (!web_is_safe_filename(filename) || !path || path_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int written = snprintf(path, path_len, "%s/%s", WEB_TRASH_DIR_PATH, filename);
+    if (written <= 0 || written >= (int)path_len) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t web_make_trash_filename_with_index(const char *filename, unsigned index, char *out, size_t out_len)
+{
+    if (!web_is_safe_filename(filename) || !out || out_len == 0U || index > 999U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *dot = strrchr(filename, '.');
+    size_t base_len = dot ? (size_t)(dot - filename) : strlen(filename);
+    if (base_len == 0U || base_len + 5U > out_len) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    memcpy(out, filename, base_len);
+    snprintf(out + base_len, out_len - base_len, ".%03u", index);
+    return ESP_OK;
+}
+
+static esp_err_t web_find_trash_target_path(const char *filename, char *trash_filename, size_t trash_filename_len, char *path, size_t path_len)
+{
+    if (!trash_filename || trash_filename_len == 0U || !path || path_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char original_path[WEB_FILE_PATH_MAX_LEN] = {0};
+    if (web_make_trash_file_path(filename, original_path, sizeof(original_path)) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct stat st;
+    if (stat(original_path, &st) != 0) {
+        snprintf(trash_filename, trash_filename_len, "%s", filename);
+        snprintf(path, path_len, "%s", original_path);
+        return ESP_OK;
+    }
+
+    for (unsigned i = 0; i <= 999U; i++) {
+        char candidate[WEB_FILE_NAME_MAX_LEN] = {0};
+        if (web_make_trash_filename_with_index(filename, i, candidate, sizeof(candidate)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        char candidate_path[WEB_FILE_PATH_MAX_LEN] = {0};
+        if (web_make_trash_file_path(candidate, candidate_path, sizeof(candidate_path)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (stat(candidate_path, &st) != 0) {
+            snprintf(trash_filename, trash_filename_len, "%s", candidate);
+            snprintf(path, path_len, "%s", candidate_path);
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NO_MEM;
+}
+
+static esp_err_t web_find_archive_target_path(const char *filename, char *archive_filename, size_t archive_filename_len, char *path, size_t path_len)
+{
+    if (!archive_filename || archive_filename_len == 0U || !path || path_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char original_path[WEB_FILE_PATH_MAX_LEN] = {0};
+    if (web_make_archive_file_path(filename, original_path, sizeof(original_path)) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct stat st;
+    if (stat(original_path, &st) != 0) {
+        snprintf(archive_filename, archive_filename_len, "%s", filename);
+        snprintf(path, path_len, "%s", original_path);
+        return ESP_OK;
+    }
+
+    for (unsigned i = 0; i <= 999U; i++) {
+        char candidate[WEB_FILE_NAME_MAX_LEN] = {0};
+        if (web_make_trash_filename_with_index(filename, i, candidate, sizeof(candidate)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        char candidate_path[WEB_FILE_PATH_MAX_LEN] = {0};
+        if (web_make_archive_file_path(candidate, candidate_path, sizeof(candidate_path)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (stat(candidate_path, &st) != 0) {
+            snprintf(archive_filename, archive_filename_len, "%s", candidate);
+            snprintf(path, path_len, "%s", candidate_path);
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NO_MEM;
+}
+
+static esp_err_t web_find_restore_target_path(const char *filename, char *restore_filename, size_t restore_filename_len, char *path, size_t path_len)
+{
+    if (!restore_filename || restore_filename_len == 0U || !path || path_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char original_path[WEB_FILE_PATH_MAX_LEN] = {0};
+    if (web_make_file_path(filename, original_path, sizeof(original_path)) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct stat st;
+    if (stat(original_path, &st) != 0) {
+        snprintf(restore_filename, restore_filename_len, "%s", filename);
+        snprintf(path, path_len, "%s", original_path);
+        return ESP_OK;
+    }
+
+    for (unsigned i = 0; i <= 999U; i++) {
+        char candidate[WEB_FILE_NAME_MAX_LEN] = {0};
+        if (web_make_trash_filename_with_index(filename, i, candidate, sizeof(candidate)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        char candidate_path[WEB_FILE_PATH_MAX_LEN] = {0};
+        if (web_make_file_path(candidate, candidate_path, sizeof(candidate_path)) != ESP_OK) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (stat(candidate_path, &st) != 0) {
+            snprintf(restore_filename, restore_filename_len, "%s", candidate);
+            snprintf(path, path_len, "%s", candidate_path);
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NO_MEM;
+}
+
+static esp_err_t web_make_file_path_for_query_location(const char *filename, bool archived, bool trashed, char *path, size_t path_len)
+{
+    if (trashed) {
+        return web_make_trash_file_path(filename, path, path_len);
+    }
+
+    return web_make_file_path_for_location(filename, archived, path, path_len);
+}
+
+static bool web_query_has_archive(httpd_req_t *req)
+{
+    if (!req) {
+        return false;
+    }
+
+    char query[128] = {0};
+    char value[8] = {0};
+    size_t query_len = httpd_req_get_url_query_len(req) + 1;
+
+    if (query_len <= 1 || query_len > sizeof(query)) {
+        return false;
+    }
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return false;
+    }
+
+    return (httpd_query_key_value(query, "archive", value, sizeof(value)) == ESP_OK &&
+            strcmp(value, "1") == 0);
+}
+
+static bool web_query_has_trash(httpd_req_t *req)
+{
+    if (!req) {
+        return false;
+    }
+
+    char query[128] = {0};
+    char value[8] = {0};
+    size_t query_len = httpd_req_get_url_query_len(req) + 1;
+
+    if (query_len <= 1 || query_len > sizeof(query)) {
+        return false;
+    }
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return false;
+    }
+
+    return (httpd_query_key_value(query, "trash", value, sizeof(value)) == ESP_OK &&
+            strcmp(value, "1") == 0);
+}
+
+static esp_err_t web_ensure_archive_dir(void)
+{
+    if (mkdir(WEB_ARCHIVE_DIR_PATH, 0775) == 0) {
+        return ESP_OK;
+    }
+
+    if (errno == EEXIST) {
+        struct stat st;
+        if (stat(WEB_ARCHIVE_DIR_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
+            return ESP_OK;
+        }
+    }
+
+    return ESP_FAIL;
+}
+
+static esp_err_t web_ensure_trash_dir(void)
+{
+    if (mkdir(WEB_TRASH_DIR_PATH, 0775) == 0) {
+        return ESP_OK;
+    }
+
+    if (errno == EEXIST) {
+        struct stat st;
+        if (stat(WEB_TRASH_DIR_PATH, &st) == 0 && S_ISDIR(st.st_mode)) {
+            return ESP_OK;
+        }
+    }
+
+    return ESP_FAIL;
 }
 
 static esp_err_t web_get_query_filename(httpd_req_t *req, char *filename, size_t filename_len)
@@ -349,6 +672,7 @@ typedef struct {
     long size;
     bool has_edl_sort_key;
     uint32_t edl_sort_key;
+    bool is_current_file;
     int cut_count;
     char edl_title[SHOW_CONFIG_TITLE_MAX_LEN];
 } web_file_item_t;
@@ -468,11 +792,6 @@ static unsigned web_get_selected_files_from_query(
             continue;
         }
 
-        // Chráněné soubory se do hromadného mazání vůbec nepustí.
-        if (file_protect_is_protected(filename)) {
-            continue;
-        }
-
         size_t name_len = strlen(filename);
         if (name_len >= sizeof(selected[count].name)) {
             continue;
@@ -526,6 +845,29 @@ static bool web_filename_has_edl_extension(const char *name)
            web_char_to_lower((unsigned char)ext[1]) == 'e' &&
            web_char_to_lower((unsigned char)ext[2]) == 'd' &&
            web_char_to_lower((unsigned char)ext[3]) == 'l';
+}
+
+static bool web_filename_has_numeric_trash_extension(const char *name)
+{
+    if (!name) {
+        return false;
+    }
+
+    size_t len = strlen(name);
+    if (len < 5) {
+        return false;
+    }
+
+    const char *ext = name + len - 4;
+    return ext[0] == '.' &&
+           isdigit((unsigned char)ext[1]) &&
+           isdigit((unsigned char)ext[2]) &&
+           isdigit((unsigned char)ext[3]);
+}
+
+static bool web_filename_has_readable_edl_extension(const char *name)
+{
+    return web_filename_has_edl_extension(name) || web_filename_has_numeric_trash_extension(name);
 }
 
 static bool web_line_starts_with_edl_event(const char *line)
@@ -611,18 +953,18 @@ static void web_copy_edl_title_from_line(const char *line, char *out, size_t out
     out[len] = '\0';
 }
 
-static int web_read_edl_info_for_file(const char *filename, char *title_out, size_t title_out_size)
+static int web_read_edl_info_for_file_location(const char *filename, bool archived, bool trashed, char *title_out, size_t title_out_size)
 {
     if (title_out && title_out_size > 0) {
         title_out[0] = '\0';
     }
 
-    if (!web_filename_has_edl_extension(filename)) {
+    if (!web_filename_has_readable_edl_extension(filename)) {
         return -1;
     }
 
     char path[WEB_FILE_PATH_MAX_LEN];
-    if (web_make_file_path(filename, path, sizeof(path)) != ESP_OK) {
+    if (web_make_file_path_for_query_location(filename, archived, trashed, path, sizeof(path)) != ESP_OK) {
         return -1;
     }
 
@@ -732,13 +1074,8 @@ static bool web_parse_edl_filename_sort_key(const char *name, uint32_t *sort_key
         }
     }
 
-    if (name[8] != '.') {
-        return false;
-    }
-
-    if (web_char_to_lower((unsigned char)name[9]) != 'e' ||
-        web_char_to_lower((unsigned char)name[10]) != 'd' ||
-        web_char_to_lower((unsigned char)name[11]) != 'l') {
+    if (name[8] != '.' ||
+        (!web_filename_has_edl_extension(name) && !web_filename_has_numeric_trash_extension(name))) {
         return false;
     }
 
@@ -760,6 +1097,10 @@ static int web_file_item_compare(const void *pa, const void *pb)
 {
     const web_file_item_t *a = (const web_file_item_t *)pa;
     const web_file_item_t *b = (const web_file_item_t *)pb;
+
+    if (a->is_current_file != b->is_current_file) {
+        return a->is_current_file ? -1 : 1;
+    }
 
     if (a->has_edl_sort_key && b->has_edl_sort_key) {
         if (a->edl_sort_key < b->edl_sort_key) {
@@ -975,14 +1316,25 @@ static void web_send_status_card(httpd_req_t *req)
     );
     web_send_chunk(req, line);
 
+    char cut_count_text[24];
+    web_format_uint_spaces(cut_event_get_cut_count(), cut_count_text, sizeof(cut_count_text));
+
+    snprintf(
+        line,
+        sizeof(line),
+        "<p>Počet střihů: <b id='home-cut-count' class='cut-count'>%s</b></p>",
+        cut_count_text
+    );
+    web_send_chunk(req, line);
+
     char active_show[SHOW_CONFIG_NAME_MAX_LEN] = {0};
     show_config_get_active_name(active_show, sizeof(active_show));
 
-    web_send_chunk(req, "<p>Aktivní pořad: <a class='active-show' href='/shows' title='Změnit'>");
+    web_send_chunk(req, "<p>Název pořadu: <a class='active-show' href='/shows' title='Změnit'>");
     web_send_html_escaped(req, active_show);
     web_send_chunk(req, "</a></p>");
 
-    web_send_chunk(req, "<p>Aktuální soubor: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
+    web_send_chunk(req, "<p>Název souboru: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
     web_send_html_escaped(req, state.current_filename);
     web_send_chunk(req, "</a></b></p>");
 
@@ -1042,6 +1394,14 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
     } else {
         snprintf(line, sizeof(line), "\"rtc_valid\":false,\"rtc\":\"---\",");
     }
+    web_send_chunk(req, line);
+
+    snprintf(
+        line,
+        sizeof(line),
+        "\"cuts\":%lu,",
+        (unsigned long)cut_event_get_cut_count()
+    );
     web_send_chunk(req, line);
 
     web_send_chunk(req, "\"file\":\"");
@@ -1180,6 +1540,7 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "function setOkBad(id,ok){var e=document.getElementById(id);if(e){e.textContent=ok?'OK':'---';e.className=ok?'ok':'bad';}}"
         "function setOnOff(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';}}"
         "function setPreviewTally(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';e.href=on?'/save_preview_tally?back=home':'/save_preview_tally?enabled=1&back=home';e.title=on?'Vypnout':'Zapnout';}}"
+        "function formatNumberSpaces(n){return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g,' ');}"
         "function updateHomeState(){"
         "fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){"
         "setOkBad('home-atem',!!s.atem);"
@@ -1188,6 +1549,7 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "setText('home-pvw',s.pvw);"
         "setText('home-tc',s.tc);"
         "setPreviewTally('home-pvw-tally',!!s.pvw_tally);"
+        "setText('home-cut-count',formatNumberSpaces(s.cuts));"
         "setText('home-file',s.file);"
         "var rtcLink=document.getElementById('home-rtc-link');"
         "var rtcDate=document.getElementById('home-rtc-date');"
@@ -1706,71 +2068,6 @@ static esp_err_t web_rtc_sync_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static bool web_query_has_confirm(httpd_req_t *req)
-{
-    char value[8] = {0};
-    return (web_get_query_value(req, "confirm", value, sizeof(value)) == ESP_OK && strcmp(value, "1") == 0);
-}
-
-static esp_err_t web_protect_handler(httpd_req_t *req)
-{
-    char filename[WEB_FILE_NAME_MAX_LEN] = {0};
-    char path[WEB_FILE_PATH_MAX_LEN] = {0};
-    unsigned state = 0;
-
-    if (!sd_storage_is_mounted()) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
-        return ESP_OK;
-    }
-
-    if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK ||
-        web_make_file_path(filename, path, sizeof(path)) != ESP_OK ||
-        !web_parse_query_uint(req, "state", 0, 1, &state)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file/state parameter");
-        return ESP_OK;
-    }
-
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-        web_send_html_header(req, "ATEM Logger - ochrana souboru");
-        web_send_chunk(req, "<h1>Ochrana souboru</h1>");
-        web_send_chunk(req, "<div class='card'><p><span class='bad'>Soubor neexistuje nebo to není běžný soubor.</span></p><p><b>");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "</b></p></div><p><a class='btn' href='/files'>Zpět na soubory</a></p>");
-        web_send_html_footer(req);
-        return ESP_OK;
-    }
-
-    bool want_protected = (state != 0U);
-
-    if (!want_protected && file_protect_is_protected(filename) && !web_query_has_confirm(req)) {
-        web_send_html_header(req, "ATEM Logger - zrušit ochranu");
-        web_send_chunk(req, "<h1>Zrušit ochranu souboru</h1>");
-        web_send_chunk(req, "<div class='card'><p><span class='bad'>Opravdu zrušit ochranu proti smazání?</span></p><p><b>");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "</b></p><p>Po zrušení ochrany bude možné soubor smazat.</p><p><a class='btn danger' href='/protect?file=");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "&amp;state=0&amp;confirm=1'>Ano, zrušit ochranu</a> <a class='btn' href='/files'>Ne, zpět</a></p></div>");
-        web_send_html_footer(req);
-        return ESP_OK;
-    }
-
-    esp_err_t ret = file_protect_set_protected(filename, want_protected);
-    if (ret == ESP_OK) {
-        return web_redirect_to_files(req);
-    }
-
-    web_send_html_header(req, "ATEM Logger - ochrana souboru");
-    web_send_chunk(req, "<h1>Ochrana souboru</h1>");
-    web_send_chunk(req, "<div class='card'><p><span class='bad'>Stav ochrany se nepodařilo uložit do NVS.</span></p><p><b>");
-    web_send_html_escaped(req, filename);
-    web_send_chunk(req, "</b></p><p>Chyba: ");
-    web_send_html_escaped(req, esp_err_to_name(ret));
-    web_send_chunk(req, "</p></div><p><a class='btn' href='/files'>Zpět na soubory</a></p>");
-    web_send_html_footer(req);
-    return ESP_OK;
-}
-
 static esp_err_t web_reboot_handler(httpd_req_t *req)
 {
     char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
@@ -1788,13 +2085,211 @@ static esp_err_t web_reboot_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t web_archive_handler(httpd_req_t *req)
+{
+    char filename[WEB_FILE_NAME_MAX_LEN] = {0};
+    char action[16] = {0};
+    char src[WEB_FILE_PATH_MAX_LEN] = {0};
+    char dst[WEB_FILE_PATH_MAX_LEN] = {0};
+    char target_filename[WEB_FILE_NAME_MAX_LEN] = {0};
+    bool restore = false;
+
+    if (!sd_storage_is_mounted()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
+        return ESP_OK;
+    }
+
+    if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK ||
+        web_get_query_value(req, "action", action, sizeof(action)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file/action parameter");
+        return ESP_OK;
+    }
+
+    if (strcmp(action, "archive") == 0) {
+        restore = false;
+        if (web_is_current_file(filename)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Current file cannot be archived");
+            return ESP_OK;
+        }
+    } else if (strcmp(action, "restore") == 0) {
+        restore = true;
+    } else {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid archive action");
+        return ESP_OK;
+    }
+
+    if (web_ensure_archive_dir() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Archive directory cannot be created");
+        return ESP_OK;
+    }
+
+    if ((restore ? web_make_archive_file_path(filename, src, sizeof(src)) : web_make_file_path(filename, src, sizeof(src))) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file path");
+        return ESP_OK;
+    }
+
+    struct stat st;
+    if (stat(src, &st) != 0 || !S_ISREG(st.st_mode)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Source file not found");
+        return ESP_OK;
+    }
+
+    esp_err_t target_ret = restore
+        ? web_find_restore_target_path(filename, target_filename, sizeof(target_filename), dst, sizeof(dst))
+        : web_find_archive_target_path(filename, target_filename, sizeof(target_filename), dst, sizeof(dst));
+    if (target_ret == ESP_ERR_NO_MEM) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, restore ? "No free restore filename" : "Archive is full for this file");
+        return ESP_OK;
+    }
+    if (target_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid target path");
+        return ESP_OK;
+    }
+
+    if (rename(src, dst) != 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Moving file failed");
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", restore ? "/files?mode=archive" : "/files");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, restore ? "Restored from archive" : "Archived");
+    return ESP_OK;
+}
+
+static esp_err_t web_trash_handler(httpd_req_t *req)
+{
+    char filename[WEB_FILE_NAME_MAX_LEN] = {0};
+    char action[16] = {0};
+    char src[WEB_FILE_PATH_MAX_LEN] = {0};
+    char dst[WEB_FILE_PATH_MAX_LEN] = {0};
+    char restore_filename[WEB_FILE_NAME_MAX_LEN] = {0};
+
+    if (!sd_storage_is_mounted()) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
+        return ESP_OK;
+    }
+
+    if (web_get_query_value(req, "action", action, sizeof(action)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid action parameter");
+        return ESP_OK;
+    }
+
+    if (strcmp(action, "empty") == 0) {
+        if (web_ensure_trash_dir() != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Trash directory cannot be created");
+            return ESP_OK;
+        }
+
+        DIR *dir = opendir(WEB_TRASH_DIR_PATH);
+        if (!dir) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Trash directory cannot be opened");
+            return ESP_OK;
+        }
+
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_name[0] == '.' || !web_is_safe_filename(entry->d_name)) {
+                continue;
+            }
+
+            char path[WEB_FILE_PATH_MAX_LEN] = {0};
+            if (web_make_trash_file_path(entry->d_name, path, sizeof(path)) != ESP_OK) {
+                continue;
+            }
+
+            struct stat st;
+            if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+                (void)remove(path);
+            }
+        }
+
+        closedir(dir);
+        return web_redirect_to_files_location(req, false, true);
+    }
+
+    if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file parameter");
+        return ESP_OK;
+    }
+
+    if (strcmp(action, "restore") != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid trash action");
+        return ESP_OK;
+    }
+
+    if (web_make_trash_file_path(filename, src, sizeof(src)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file path");
+        return ESP_OK;
+    }
+
+    struct stat st;
+    if (stat(src, &st) != 0 || !S_ISREG(st.st_mode)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Trash file not found");
+        return ESP_OK;
+    }
+
+    esp_err_t target_ret = web_find_restore_target_path(filename, restore_filename, sizeof(restore_filename), dst, sizeof(dst));
+    if (target_ret == ESP_ERR_NO_MEM) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No free restore filename");
+        return ESP_OK;
+    }
+    if (target_ret != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid restore path");
+        return ESP_OK;
+    }
+
+    if (rename(src, dst) != 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Restoring file failed");
+        return ESP_OK;
+    }
+
+    return web_redirect_to_files_location(req, false, true);
+}
+
+static esp_err_t web_move_file_to_trash(const char *filename, bool archived)
+{
+    char src[WEB_FILE_PATH_MAX_LEN] = {0};
+    char dst[WEB_FILE_PATH_MAX_LEN] = {0};
+    char trash_filename[WEB_FILE_NAME_MAX_LEN] = {0};
+
+    if (web_ensure_trash_dir() != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    if (web_make_file_path_for_location(filename, archived, src, sizeof(src)) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t target_ret = web_find_trash_target_path(filename, trash_filename, sizeof(trash_filename), dst, sizeof(dst));
+    if (target_ret != ESP_OK) {
+        return target_ret;
+    }
+
+    struct stat st;
+    if (stat(src, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (rename(src, dst) != 0) {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t web_files_handler(httpd_req_t *req)
 {
     unsigned requested_page = web_get_query_page(req);
 
     char mode_value[16] = {0};
     if (web_get_query_value(req, "mode", mode_value, sizeof(mode_value)) == ESP_OK) {
-        if (strcmp(mode_value, "all") == 0) {
+        if (strcmp(mode_value, "trash") == 0) {
+            s_files_mode = WEB_FILES_MODE_TRASH;
+        } else if (strcmp(mode_value, "archive") == 0) {
+            s_files_mode = WEB_FILES_MODE_ARCHIVE;
+        } else if (strcmp(mode_value, "all") == 0) {
             s_files_mode = WEB_FILES_MODE_ALL;
         } else if (strcmp(mode_value, "empty") == 0) {
             s_files_mode = WEB_FILES_MODE_EMPTY;
@@ -1814,20 +2309,35 @@ static esp_err_t web_files_handler(httpd_req_t *req)
     }
 
     web_files_mode_t files_mode = s_files_mode;
+    bool archive_mode = (files_mode == WEB_FILES_MODE_ARCHIVE);
+    bool trash_mode = (files_mode == WEB_FILES_MODE_TRASH);
+    const char *list_dir = trash_mode ? WEB_TRASH_DIR_PATH : (archive_mode ? WEB_ARCHIVE_DIR_PATH : SD_STORAGE_MOUNT_POINT);
 
     web_send_html_header(req, "ATEM Logger - soubory");
     web_send_chunk(req, "<h1>Soubory na SD kartě</h1>");
     web_send_chunk(req, "<p><a class='btn' href='/'>Home</a> <a class='btn' href='/files'>Refresh</a> ");
     web_send_chunk(req, (files_mode == WEB_FILES_MODE_WITH_CUTS)
-                        ? "<a class='btn btn-active' href='/files?mode=cuts'>Zobrazit jen soubory se střihy</a> "
-                        : "<a class='btn' href='/files?mode=cuts'>Zobrazit jen soubory se střihy</a> ");
+                        ? "<a class='btn btn-active' href='/files?mode=cuts'>Soubory se střihy</a> "
+                        : "<a class='btn' href='/files?mode=cuts'>Soubory se střihy</a> ");
     web_send_chunk(req, (files_mode == WEB_FILES_MODE_EMPTY)
-                        ? "<a class='btn btn-active' href='/files?mode=empty'>Zobrazit jen střihy = 0</a> "
-                        : "<a class='btn' href='/files?mode=empty'>Zobrazit jen střihy = 0</a> ");
+                        ? "<a class='btn btn-active' href='/files?mode=empty'>Prázdné soubory</a> "
+                        : "<a class='btn' href='/files?mode=empty'>Prázdné soubory</a> ");
     web_send_chunk(req, (files_mode == WEB_FILES_MODE_ALL)
-                        ? "<a class='btn btn-active' href='/files?mode=all'>Zobrazit všechny soubory</a> "
-                        : "<a class='btn' href='/files?mode=all'>Zobrazit všechny soubory</a> ");
-    web_send_chunk(req, "<a class='btn' href='/new_file?back=files' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">Uzavřít aktuální a vytvořit nový</a></p>");
+                        ? "<a class='btn btn-active' href='/files?mode=all'>Všechny soubory</a> "
+                        : "<a class='btn' href='/files?mode=all'>Všechny soubory</a> ");
+    web_send_chunk(req, (files_mode == WEB_FILES_MODE_ARCHIVE)
+                        ? "<a class='btn btn-active' href='/files?mode=archive'>Archiv</a> "
+                        : "<a class='btn' href='/files?mode=archive'>Archiv</a> ");
+    if (!archive_mode && !trash_mode) {
+        web_send_chunk(req, "<a class='btn' href='/new_file?back=files' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">Uzavřít aktuální a vytvořit nový</a> ");
+    }
+    web_send_chunk(req, (files_mode == WEB_FILES_MODE_TRASH)
+                        ? "<a class='btn btn-active' href='/files?mode=trash'>Koš</a> "
+                        : "<a class='btn' href='/files?mode=trash'>Koš</a> ");
+    if (trash_mode) {
+        web_send_chunk(req, "<a class='btn danger' href='/trash?action=empty' title='Smaže navždy obsah celého koše' onclick=\"return confirm('Opravdu definitivně smazat celý koš?');\">Vyprázdnit koš</a> ");
+    }
+    web_send_chunk(req, "</p>");
 
     if (!sd_storage_is_mounted()) {
         web_send_chunk(req, "<div class='card'><span class='bad'>SD karta není připojená.</span></div>");
@@ -1842,10 +2352,16 @@ static esp_err_t web_files_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    DIR *dir = opendir(SD_STORAGE_MOUNT_POINT);
+    if (archive_mode) {
+        (void)web_ensure_archive_dir();
+    } else if (trash_mode) {
+        (void)web_ensure_trash_dir();
+    }
+
+    DIR *dir = opendir(list_dir);
     if (!dir) {
         free(files);
-        web_send_chunk(req, "<div class='card'><span class='bad'>Nejde otevřít adresář /sdcard.</span></div>");
+        web_send_chunk(req, "<div class='card'><span class='bad'>Nejde otevřít adresář se soubory.</span></div>");
         web_send_html_footer(req);
         return ESP_OK;
     }
@@ -1864,7 +2380,7 @@ static esp_err_t web_files_handler(httpd_req_t *req)
         }
 
         char path[WEB_FILE_PATH_MAX_LEN];
-        if (web_make_file_path(entry->d_name, path, sizeof(path)) != ESP_OK) {
+        if (web_make_file_path_for_query_location(entry->d_name, archive_mode, trash_mode, path, sizeof(path)) != ESP_OK) {
             continue;
         }
 
@@ -1886,6 +2402,7 @@ static esp_err_t web_files_handler(httpd_req_t *req)
 
         files[count].size = (long)st.st_size;
         files[count].has_edl_sort_key = web_parse_edl_filename_sort_key(files[count].name, &files[count].edl_sort_key);
+        files[count].is_current_file = !archive_mode && !trash_mode && web_is_current_file(files[count].name);
         count++;
     }
 
@@ -1899,9 +2416,8 @@ static esp_err_t web_files_handler(httpd_req_t *req)
     unsigned filtered_count = 0;
 
     for (unsigned i = 0; i < total_loaded; i++) {
-        files[i].cut_count = web_read_edl_info_for_file(files[i].name, files[i].edl_title, sizeof(files[i].edl_title));
-        bool is_current_file = web_is_current_file(files[i].name);
-        if (web_files_mode_should_show(files_mode, files[i].cut_count, is_current_file)) {
+        files[i].cut_count = web_read_edl_info_for_file_location(files[i].name, archive_mode, trash_mode, files[i].edl_title, sizeof(files[i].edl_title));
+        if (web_files_mode_should_show(files_mode, files[i].cut_count, files[i].is_current_file)) {
             if (filtered_count != i) {
                 files[filtered_count] = files[i];
             }
@@ -1947,52 +2463,89 @@ static esp_err_t web_files_handler(httpd_req_t *req)
 
     web_send_chunk(req, "<form action='/delete_selected' method='get' id='deleteSelectedForm'>");
     web_send_chunk(req, "<div class='table-wrap'>");
-    web_send_chunk(req, "<table><tr><th class='select-cell'><input class='selectcheck' type='checkbox' id='selectVisibleFiles' title='Vybrat všechny zobrazené mazatelné soubory'></th><th class='file-cell'>Soubor</th><th class='program-cell'>Pořad</th><th class='cuts-cell'>Střihy</th><th class='size-cell'>Velikost</th><th class='view-cell'>Zobrazit</th><th class='download-cell'>Stáhnout</th><th class='protect-cell'>Chráněno</th><th class='delete-cell'>Smazat</th></tr>");
+    if (trash_mode) {
+        web_send_chunk(req, "<table class='files-table'><tr><th class='file-cell'>Soubor</th><th class='program-cell'>Název pořadu</th><th class='cuts-cell'>Střihy</th><th class='size-cell'>Velikost</th><th class='archive-cell'>Vrátit</th><th class='delete-cell'>Smazat navždy</th></tr>");
+    } else {
+        web_send_chunk(req, "<table class='files-table'><tr><th class='select-cell'><input class='selectcheck' type='checkbox' id='selectVisibleFiles' title='Vybrat všechny zobrazené mazatelné soubory'></th><th class='file-cell'>Soubor</th><th class='program-cell'>Název pořadu</th><th class='cuts-cell'>Střihy</th><th class='size-cell'>Velikost</th><th class='view-cell'>Zobrazit</th><th class='download-cell'>Stáhnout</th><th class='archive-cell'>Archiv</th><th class='delete-cell'>Odstranit do koše</th></tr>");
+    }
 
     for (unsigned i = start_index; i < end_index; i++) {
         char size_text[32];
         snprintf(size_text, sizeof(size_text), "%ld B", files[i].size);
-        bool is_current_file = web_is_current_file(files[i].name);
-        bool is_protected = file_protect_is_protected(files[i].name);
+        bool is_current_file = files[i].is_current_file;
         const char *edl_title = files[i].edl_title;
         int cut_count = files[i].cut_count;
         unsigned checkbox_index = i - start_index;
+        char checkbox_name[16];
+        bool has_checkbox_name = web_make_index_key(checkbox_name, sizeof(checkbox_name), checkbox_index);
 
         if (is_current_file) {
-            web_send_chunk(req, "<tr class='current-row'><td class='select-cell'>");
+            web_send_chunk(req, "<tr class='current-row' data-file='");
         } else {
-            web_send_chunk(req, "<tr><td class='select-cell'>");
+            web_send_chunk(req, "<tr data-file='");
+        }
+        web_send_html_escaped(req, files[i].name);
+        web_send_chunk(req, "' data-current='");
+        web_send_chunk(req, is_current_file ? "1" : "0");
+        web_send_chunk(req, "' data-archive='");
+        web_send_chunk(req, archive_mode ? "1" : "0");
+        web_send_chunk(req, "' data-trash='");
+        web_send_chunk(req, trash_mode ? "1" : "0");
+        web_send_chunk(req, "'>");
+
+        if (!trash_mode) {
+            web_send_chunk(req, "<td class='select-cell'>");
         }
 
-        if (is_current_file) {
+        if (trash_mode) {
+            // Koš nemá hromadný výběr; maže se jednotlivě nebo tlačítkem Smazat vše.
+        } else if (archive_mode) {
+            web_send_chunk(req, "<input class='filecheck' type='checkbox' disabled title='Archivované soubory se mažou samostatně'>");
+        } else if (is_current_file) {
             web_send_chunk(req, "<input class='filecheck' type='checkbox' disabled title='Aktuální soubor se maže jen samostatně'>");
-        } else if (is_protected) {
-            web_send_chunk(req, "<input class='filecheck' type='checkbox' disabled title='Soubor je chráněný proti smazání'>");
-        } else {
-            char checkbox_name[16];
-            if (!web_make_index_key(checkbox_name, sizeof(checkbox_name), checkbox_index)) {
-                continue;
-            }
+        } else if (has_checkbox_name) {
             web_send_chunk(req, "<input class='filecheck' type='checkbox' name='");
             web_send_html_escaped(req, checkbox_name);
             web_send_chunk(req, "' value='");
             web_send_html_escaped(req, files[i].name);
-            web_send_chunk(req, "'>");
+            web_send_chunk(req, "'");
+            web_send_chunk(req, ">");
         }
 
-        web_send_chunk(req, "</td><td class='file-cell'><a href='/view?file=");
-        web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "'>");
-        web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "</a>");
+        if (!trash_mode) {
+            web_send_chunk(req, "</td>");
+        }
+
+        web_send_chunk(req, "<td class='file-cell'>");
+        if (trash_mode) {
+            web_send_html_escaped(req, files[i].name);
+        } else {
+            web_send_chunk(req, "<a href='/view?file=");
+            web_send_html_escaped(req, files[i].name);
+            if (archive_mode) {
+                web_send_chunk(req, "&amp;archive=1");
+            }
+            web_send_chunk(req, "' title='Zobrazit obsah'>");
+            web_send_html_escaped(req, files[i].name);
+            web_send_chunk(req, "</a>");
+        }
 
         web_send_chunk(req, "</td><td class='program-cell'>");
         if (edl_title[0] != '\0') {
-            web_send_chunk(req, "<span class='copy-title' title='Zkopírovat' data-copy='");
-            web_send_html_escaped(req, edl_title);
-            web_send_chunk(req, "'>");
-            web_send_html_escaped(req, edl_title);
-            web_send_chunk(req, "</span>");
+            if (trash_mode || is_current_file) {
+                web_send_html_escaped(req, edl_title);
+            } else {
+                web_send_chunk(req, "<a href='/download?file=");
+                web_send_html_escaped(req, files[i].name);
+                if (archive_mode) {
+                    web_send_chunk(req, "&amp;archive=1");
+                }
+                web_send_chunk(req, "' title='Stáhnout: ");
+                web_send_html_escaped(req, edl_title);
+                web_send_chunk(req, ".edl'>");
+                web_send_html_escaped(req, edl_title);
+                web_send_chunk(req, "</a>");
+            }
         } else {
             web_send_chunk(req, "<span class='muted'>—</span>");
         }
@@ -2009,69 +2562,100 @@ static esp_err_t web_files_handler(httpd_req_t *req)
         web_send_chunk(req, "</td><td class='size-cell'>");
         web_send_html_escaped(req, size_text);
 
-        web_send_chunk(req, "</td><td class='view-cell'><a href='/view?file=");
-        web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "'>zobrazit</a>");
+        if (!trash_mode) {
+            web_send_chunk(req, "</td><td class='view-cell'><a href='/view?file=");
+            web_send_html_escaped(req, files[i].name);
+            if (archive_mode) {
+                web_send_chunk(req, "&amp;archive=1");
+            }
+            web_send_chunk(req, "' title='Zobrazit obsah'>zobrazit</a>");
 
-        web_send_chunk(req, "</td><td class='download-cell'><a href='/download?file=");
-        web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "'>stáhnout</a>");
-
-        web_send_chunk(req, "</td><td class='protect-cell'><input class='protect-check' type='checkbox' title='Chráněno proti smazání'");
-        if (is_protected) {
-            web_send_chunk(req, " checked");
+            web_send_chunk(req, "</td><td class='download-cell'>");
+            if (is_current_file) {
+                web_send_chunk(req, "<span class='muted' title='Aktuální soubor nelze stáhnout, nejprve ho uzavřete tlačítkem Uzavřít aktuální a vytvořit nový'>stáhnout</span>");
+            } else {
+                web_send_chunk(req, "<a href='/download?file=");
+                web_send_html_escaped(req, files[i].name);
+                if (archive_mode) {
+                    web_send_chunk(req, "&amp;archive=1");
+                }
+                if (edl_title[0] != '\0') {
+                    web_send_chunk(req, "' title='Stáhnout: ");
+                    web_send_html_escaped(req, edl_title);
+                    web_send_chunk(req, ".edl'>stáhnout</a>");
+                } else {
+                    web_send_chunk(req, "' title='Stáhnout soubor s názvem pořadu'>stáhnout</a>");
+                }
+            }
         }
-        web_send_chunk(req, " onchange=\"if(!this.checked&&!confirm('Opravdu zrušit ochranu proti smazání?\\n\\nPo zrušení ochrany bude možné soubor smazat.')){this.checked=true;return;}window.location.href='/protect?file=");
-        web_send_html_escaped(req, files[i].name);
-        web_send_chunk(req, "&amp;state='+(this.checked?'1':'0')+(this.checked?'':'&amp;confirm=1')\">");
 
-        web_send_chunk(req, "</td><td class='delete-cell'>");
+        web_send_chunk(req, "</td><td class='archive-cell'>");
+        if (trash_mode) {
+            web_send_chunk(req, "<a href='/trash?file=");
+            web_send_html_escaped(req, files[i].name);
+            web_send_chunk(req, "&amp;action=restore' onclick=\"return confirm('Vrátit soubor z koše?');\">vrátit</a>");
+        } else if (archive_mode) {
+            web_send_chunk(req, "<a href='/archive?file=");
+            web_send_html_escaped(req, files[i].name);
+            web_send_chunk(req, "&amp;action=restore' onclick=\"return confirm('Vrátit soubor z archivu?');\">vrátit</a>");
+        } else if (is_current_file) {
+            web_send_chunk(req, "<span class='muted'>aktuální soubor</span>");
+        } else {
+            web_send_chunk(req, "<a href='/archive?file=");
+            web_send_html_escaped(req, files[i].name);
+            web_send_chunk(req, "&amp;action=archive' title='Přesunout soubor do složky Archiv' onclick=\"return confirm('Archivovat soubor?');\">archivovat</a>");
+        }
+
+        web_send_chunk(req, "</td><td class='delete-cell' data-delete-cell='1'>");
         if (is_current_file) {
             web_send_chunk(req, "<span class='muted'>aktuální soubor</span><br>");
-            if (is_protected) {
-                web_send_chunk(req, "<span class='disabled-delete'>smazat aktuální</span>");
-            } else {
-                web_send_chunk(req, "<a class='del' href='/delete?file=");
-                web_send_html_escaped(req, files[i].name);
-                web_send_chunk(req, "'>smazat aktuální</a>");
-            }
-        } else if (is_protected) {
-            web_send_chunk(req, "<span class='disabled-delete'>smazat</span>");
+            web_send_chunk(req, "<a class='del' href='/delete?file=");
+            web_send_html_escaped(req, files[i].name);
+            web_send_chunk(req, "' title='Uzavřít, přesunout do koše a vytvořit nový'>odstranit aktuální</a>");
         } else {
             web_send_chunk(req, "<a class='del' href='/delete?file=");
             web_send_html_escaped(req, files[i].name);
-            web_send_chunk(req, "'>smazat</a>");
+            if (archive_mode) {
+                web_send_chunk(req, "&amp;archive=1");
+            } else if (trash_mode) {
+                web_send_chunk(req, "&amp;trash=1");
+            }
+            web_send_chunk(req, trash_mode ? "'>odstranit</a>" : "' title='Přesunout soubor do koše'>odstranit</a>");
         }
 
         web_send_chunk(req, "</td></tr>");
     }
 
     if (count == 0) {
-        web_send_chunk(req, "<tr><td colspan='9' class='muted'>V tomto režimu nejsou žádné zobrazitelné soubory.</td></tr>");
+        web_send_chunk(req, trash_mode
+            ? "<tr><td colspan='6' class='muted'>Koš je prázdný.</td></tr>"
+            : "<tr><td colspan='9' class='muted'>V tomto režimu nejsou žádné zobrazitelné soubory.</td></tr>");
     }
 
     web_send_chunk(req, "</table></div>");
 
-    if (count > 0) {
-        web_send_chunk(req, "<p><button class='btn danger' type='submit' id='deleteSelectedBtn' disabled>Smazat vybrané</button> ");
+    if (count > 0 && !trash_mode) {
+        web_send_chunk(req, "<p><button class='btn danger' type='submit' id='deleteSelectedBtn' disabled>Přesunout vybrané do koše</button> ");
         web_send_chunk(req, "<span class='muted' id='selectedInfo'>Vybráno 0 / 20</span></p>");
         web_send_chunk(req,
             "<script>"
             "(function(){"
             "const max=20;"
-            "const boxes=Array.from(document.querySelectorAll('input.filecheck:not(:disabled)'));"
             "const selectAll=document.getElementById('selectVisibleFiles');"
             "const btn=document.getElementById('deleteSelectedBtn');"
             "const info=document.getElementById('selectedInfo');"
+            "function boxes(){return Array.from(document.querySelectorAll('input.filecheck:not(:disabled)'));}"
             "function upd(changed){"
-            "let n=boxes.filter(b=>b.checked).length;"
-            "if(n>max && changed){changed.checked=false;n=boxes.filter(b=>b.checked).length;alert('Najednou lze smazat nejvýše 20 souborů.');}"
+            "const bs=boxes();"
+            "let n=bs.filter(b=>b.checked).length;"
+            "if(n>max && changed){changed.checked=false;n=bs.filter(b=>b.checked).length;alert('Najednou lze smazat nejvýše 20 souborů.');}"
             "if(btn)btn.disabled=(n===0);"
             "if(info)info.textContent='Vybráno '+n+' / '+max;"
-            "if(selectAll){selectAll.disabled=(boxes.length===0);selectAll.checked=(boxes.length>0&&n===boxes.length);selectAll.indeterminate=(n>0&&n<boxes.length);}"
+            "if(selectAll){selectAll.disabled=(bs.length===0);selectAll.checked=(bs.length>0&&n===bs.length);selectAll.indeterminate=(n>0&&n<bs.length);}"
             "}"
-            "if(selectAll){selectAll.addEventListener('change',function(){boxes.forEach(b=>b.checked=selectAll.checked);upd(null);});}"
-            "boxes.forEach(b=>b.addEventListener('change',function(){upd(this);}));"
+            "function wireFileChecks(){document.querySelectorAll('input.filecheck').forEach(function(b){if(!b.dataset.wired){b.dataset.wired='1';b.addEventListener('change',function(){upd(this);});}});}"
+            "if(selectAll){selectAll.addEventListener('change',function(){boxes().forEach(b=>b.checked=selectAll.checked);upd(null);});}"
+            "wireFileChecks();"
             "upd(null);"
             "})();"
             "</script>"
@@ -2097,6 +2681,8 @@ static esp_err_t web_view_handler(httpd_req_t *req)
 {
     char filename[WEB_FILE_NAME_MAX_LEN] = {0};
     char path[WEB_FILE_PATH_MAX_LEN] = {0};
+    bool archived = web_query_has_archive(req);
+    bool trashed = web_query_has_trash(req);
 
     if (!sd_storage_is_mounted()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
@@ -2104,7 +2690,7 @@ static esp_err_t web_view_handler(httpd_req_t *req)
     }
 
     if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK ||
-        web_make_file_path(filename, path, sizeof(path)) != ESP_OK) {
+        web_make_file_path_for_query_location(filename, archived, trashed, path, sizeof(path)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file parameter");
         return ESP_OK;
     }
@@ -2118,11 +2704,11 @@ static esp_err_t web_view_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
 
-    bool is_current_file = web_is_current_file(filename);
-    bool is_protected = file_protect_is_protected(filename);
-
+    bool is_current_file = !archived && !trashed && web_is_current_file(filename);
     web_send_html_header(req, filename);
-    web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a> ");
+    web_send_chunk(req, "<p><a class='btn' href='");
+    web_send_chunk(req, trashed ? "/files?mode=trash" : (archived ? "/files?mode=archive" : "/files"));
+    web_send_chunk(req, "'>Zpět na soubory</a> ");
     if (is_current_file) {
         web_send_chunk(req, "<a class='btn' href='/view?file=");
         web_send_html_escaped(req, filename);
@@ -2130,17 +2716,23 @@ static esp_err_t web_view_handler(httpd_req_t *req)
     }
     web_send_chunk(req, "<a class='btn' href='/download?file=");
     web_send_html_escaped(req, filename);
+    if (archived) {
+        web_send_chunk(req, "&amp;archive=1");
+    } else if (trashed) {
+        web_send_chunk(req, "&amp;trash=1");
+    }
     web_send_chunk(req, "'>Stáhnout</a>");
-    if (is_protected) {
-        web_send_chunk(req, " <span class='btn muted'>Chráněno proti smazání</span>");
+    web_send_chunk(req, " <a class='btn danger' href='/delete?file=");
+    web_send_html_escaped(req, filename);
+    if (archived) {
+        web_send_chunk(req, "&amp;archive=1");
+    } else if (trashed) {
+        web_send_chunk(req, "&amp;trash=1");
+    }
+    if (is_current_file) {
+        web_send_chunk(req, "' title='Smaže aktuální soubor a vytvoří nový se stejným názvem'>Smazat aktuální a vytvořit nový</a>");
     } else {
-        web_send_chunk(req, " <a class='btn danger' href='/delete?file=");
-        web_send_html_escaped(req, filename);
-        if (is_current_file) {
-            web_send_chunk(req, "'>Smazat aktuální</a>");
-        } else {
-            web_send_chunk(req, "'>Smazat</a>");
-        }
+        web_send_chunk(req, "'>Smazat</a>");
     }
     web_send_chunk(req, "</p>");
     web_send_chunk(req, "<h1>");
@@ -2175,8 +2767,8 @@ static esp_err_t web_delete_selected_confirm_handler(httpd_req_t *req)
         WEB_FILES_PER_PAGE
     );
 
-    web_send_html_header(req, "ATEM Logger - smazat vybrané");
-    web_send_chunk(req, "<h1>Smazat vybrané soubory</h1>");
+    web_send_html_header(req, "ATEM Logger - přesunout vybrané do koše");
+    web_send_chunk(req, "<h1>Přesunout vybrané soubory do koše</h1>");
 
     if (selected_count == 0) {
         web_send_chunk(req, "<div class='card'><p><span class='bad'>Není vybraný žádný platný soubor ke smazání.</span></p></div>");
@@ -2186,7 +2778,7 @@ static esp_err_t web_delete_selected_confirm_handler(httpd_req_t *req)
     }
 
     char line[160];
-    snprintf(line, sizeof(line), "<div class='card'><p>Opravdu smazat vybrané soubory? Počet: <b>%u</b></p><ul>", selected_count);
+    snprintf(line, sizeof(line), "<div class='card'><p>Opravdu přesunout vybrané soubory do koše? Počet: <b>%u</b></p><ul>", selected_count);
     web_send_chunk(req, line);
 
     for (unsigned i = 0; i < selected_count; i++) {
@@ -2207,7 +2799,7 @@ static esp_err_t web_delete_selected_confirm_handler(httpd_req_t *req)
         web_send_html_escaped(req, selected[i].name);
         web_send_chunk(req, "'>");
     }
-    web_send_chunk(req, "<p><button class='btn danger' type='submit'>Ano, smazat vybrané</button> <a class='btn' href='/files'>Ne, zpět</a></p></form></div>");
+    web_send_chunk(req, "<p><button class='btn danger' type='submit'>Ano, přesunout vybrané</button> <a class='btn' href='/files'>Ne, zpět</a></p></form></div>");
 
     web_send_html_footer(req);
     return ESP_OK;
@@ -2228,8 +2820,8 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
         WEB_MAX_SELECTED_DELETE
     );
 
-    web_send_html_header(req, "ATEM Logger - mazání vybraných");
-    web_send_chunk(req, "<h1>Mazání vybraných souborů</h1>");
+    web_send_html_header(req, "ATEM Logger - přesun vybraných do koše");
+    web_send_chunk(req, "<h1>Přesun vybraných souborů do koše</h1>");
 
     if (selected_count == 0) {
         web_send_chunk(req, "<div class='card'><p><span class='bad'>Není vybraný žádný platný soubor ke smazání.</span></p></div>");
@@ -2238,7 +2830,7 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    unsigned deleted = 0;
+    unsigned moved = 0;
     unsigned skipped = 0;
     unsigned failed = 0;
 
@@ -2253,10 +2845,6 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
             result = "aktuální soubor přeskočen";
             class_name = "muted";
             skipped++;
-        } else if (file_protect_is_protected(selected[i].name)) {
-            result = "chráněný soubor přeskočen";
-            class_name = "muted";
-            skipped++;
         } else if (web_make_file_path(selected[i].name, path, sizeof(path)) != ESP_OK) {
             result = "neplatná cesta";
             class_name = "bad";
@@ -2267,14 +2855,21 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
                 result = "soubor neexistuje";
                 class_name = "bad";
                 failed++;
-            } else if (remove(path) == 0) {
-                result = "smazáno";
-                class_name = "ok";
-                deleted++;
             } else {
-                result = "nepodařilo se smazat";
-                class_name = "bad";
-                failed++;
+                esp_err_t move_ret = web_move_file_to_trash(selected[i].name, false);
+                if (move_ret == ESP_OK) {
+                    result = "přesunuto do koše";
+                    class_name = "ok";
+                    moved++;
+                } else if (move_ret == ESP_ERR_NO_MEM) {
+                    result = "koš je plný pro tento soubor";
+                    class_name = "bad";
+                    failed++;
+                } else {
+                    result = "nepodařilo se přesunout";
+                    class_name = "bad";
+                    failed++;
+                }
             }
         }
 
@@ -2290,7 +2885,7 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
     web_send_chunk(req, "</table>");
 
     char summary[192];
-    snprintf(summary, sizeof(summary), "<p>Smazáno: <b>%u</b>, přeskočeno: <b>%u</b>, chyba: <b>%u</b>.</p>", deleted, skipped, failed);
+    snprintf(summary, sizeof(summary), "<p>Přesunuto do koše: <b>%u</b>, přeskočeno: <b>%u</b>, chyba: <b>%u</b>.</p>", moved, skipped, failed);
     web_send_chunk(req, summary);
     web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a></p>");
 
@@ -2301,6 +2896,8 @@ static esp_err_t web_delete_selected_do_handler(httpd_req_t *req)
 static esp_err_t web_delete_confirm_handler(httpd_req_t *req)
 {
     char filename[WEB_FILE_NAME_MAX_LEN] = {0};
+    bool archived = web_query_has_archive(req);
+    bool trashed = web_query_has_trash(req);
 
     if (!sd_storage_is_mounted()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
@@ -2315,32 +2912,33 @@ static esp_err_t web_delete_confirm_handler(httpd_req_t *req)
     web_send_html_header(req, "ATEM Logger - smazat soubor");
     web_send_chunk(req, "<h1>Smazat soubor</h1>");
 
-    if (file_protect_is_protected(filename)) {
-        web_send_chunk(req, "<div class='card'><p><span class='bad'>Tento soubor je chráněný proti smazání.</span></p><p><b>");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "</b></p><p>Nejdřív zruš ochranu ve výpisu souborů.</p><p><a class='btn' href='/files'>Zpět na soubory</a></p></div>");
-        web_send_html_footer(req);
-        return ESP_OK;
-    }
-
-    if (web_is_current_file(filename)) {
+    if (!archived && !trashed && web_is_current_file(filename)) {
         web_send_chunk(req, "<div class='card'><p><span class='bad'>Toto je aktuální otevřený EDL soubor.</span></p>");
-        web_send_chunk(req, "<p>Smazat ho lze pouze samostatně. Před smazáním se uzavře aktuální session, smaže se tento soubor a hned se vytvoří nový EDL soubor.</p><p><b>");
+        web_send_chunk(req, "<p>Přesunout ho lze pouze samostatně. Před přesunem do koše se uzavře aktuální session a hned se vytvoří nový EDL soubor.</p><p><b>");
         web_send_html_escaped(req, filename);
         web_send_chunk(req, "</b></p>");
         web_send_chunk(req, "<p><a class='btn danger' href='/delete_do?file=");
         web_send_html_escaped(req, filename);
-        web_send_chunk(req, "'>Ano, smazat aktuální a vytvořit nový</a> <a class='btn' href='/files'>Ne, zpět</a></p></div>");
+        web_send_chunk(req, "'>Ano, přesunout do koše a vytvořit nový</a> <a class='btn' href='/files'>Ne, zpět</a></p></div>");
         web_send_html_footer(req);
         return ESP_OK;
     }
 
-    web_send_chunk(req, "<div class='card'><p>Opravdu smazat soubor?</p><p><b>");
+    web_send_chunk(req, trashed
+        ? "<div class='card'><p>Opravdu definitivně smazat soubor?</p><p><b>"
+        : "<div class='card'><p>Opravdu přesunout soubor do koše?</p><p><b>");
     web_send_html_escaped(req, filename);
     web_send_chunk(req, "</b></p>");
     web_send_chunk(req, "<p><a class='btn danger' href='/delete_do?file=");
     web_send_html_escaped(req, filename);
-    web_send_chunk(req, "'>Ano, smazat</a> <a class='btn' href='/files'>Ne, zpět</a></p></div>");
+    if (archived) {
+        web_send_chunk(req, "&amp;archive=1");
+    } else if (trashed) {
+        web_send_chunk(req, "&amp;trash=1");
+    }
+    web_send_chunk(req, trashed ? "'>Ano, smazat definitivně</a> <a class='btn' href='" : "'>Ano, přesunout do koše</a> <a class='btn' href='");
+    web_send_chunk(req, trashed ? "/files?mode=trash" : (archived ? "/files?mode=archive" : "/files"));
+    web_send_chunk(req, "'>Ne, zpět</a></p></div>");
 
     web_send_html_footer(req);
     return ESP_OK;
@@ -2350,6 +2948,8 @@ static esp_err_t web_delete_do_handler(httpd_req_t *req)
 {
     char filename[WEB_FILE_NAME_MAX_LEN] = {0};
     char path[WEB_FILE_PATH_MAX_LEN] = {0};
+    bool archived = web_query_has_archive(req);
+    bool trashed = web_query_has_trash(req);
 
     if (!sd_storage_is_mounted()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
@@ -2357,23 +2957,12 @@ static esp_err_t web_delete_do_handler(httpd_req_t *req)
     }
 
     if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK ||
-        web_make_file_path(filename, path, sizeof(path)) != ESP_OK) {
+        web_make_file_path_for_query_location(filename, archived, trashed, path, sizeof(path)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file parameter");
         return ESP_OK;
     }
 
-    bool is_current_file = web_is_current_file(filename);
-
-    if (file_protect_is_protected(filename)) {
-        web_send_html_header(req, "ATEM Logger - smazání blokováno");
-        web_send_chunk(req, "<h1>Mazání souboru</h1>");
-        web_send_chunk(req, "<div class='card'><p><span class='bad'>Soubor je chráněný proti smazání a nebyl smazán.</span></p><p><b>");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "</b></p><p>Nejdřív zruš ochranu ve výpisu souborů.</p></div>");
-        web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a></p>");
-        web_send_html_footer(req);
-        return ESP_OK;
-    }
+    bool is_current_file = !archived && !trashed && web_is_current_file(filename);
 
     struct stat st;
     if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -2382,7 +2971,9 @@ static esp_err_t web_delete_do_handler(httpd_req_t *req)
         web_send_chunk(req, "<div class='card'><p><span class='bad'>Soubor neexistuje nebo to není běžný soubor.</span></p><p><b>");
         web_send_html_escaped(req, filename);
         web_send_chunk(req, "</b></p></div>");
-        web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a></p>");
+        web_send_chunk(req, "<p><a class='btn' href='");
+        web_send_chunk(req, trashed ? "/files?mode=trash" : (archived ? "/files?mode=archive" : "/files"));
+        web_send_chunk(req, "'>Zpět na soubory</a></p>");
         web_send_html_footer(req);
         return ESP_OK;
     }
@@ -2394,18 +2985,45 @@ static esp_err_t web_delete_do_handler(httpd_req_t *req)
 
         app_state_update_rtc(&rtc_now, rtc_valid);
 
-        // Aktuální soubor se maže jen samostatně:
+        char trash_filename[WEB_FILE_NAME_MAX_LEN] = {0};
+        char trash_path[WEB_FILE_PATH_MAX_LEN] = {0};
+        esp_err_t trash_ret = web_ensure_trash_dir();
+        if (trash_ret == ESP_OK) {
+            trash_ret = web_find_trash_target_path(filename, trash_filename, sizeof(trash_filename), trash_path, sizeof(trash_path));
+        }
+
+        if (trash_ret != ESP_OK && trash_ret != ESP_ERR_NO_MEM) {
+            web_send_html_header(req, "ATEM Logger - chyba koše");
+            web_send_chunk(req, "<h1>Mazání souboru</h1>");
+            web_send_chunk(req, "<div class='card'><p><span class='bad'>Koš se nepodařilo připravit.</span></p></div>");
+            web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a></p>");
+            web_send_html_footer(req);
+            return ESP_OK;
+        }
+
+        if (trash_ret == ESP_ERR_NO_MEM) {
+            web_send_html_header(req, "ATEM Logger - koš je plný");
+            web_send_chunk(req, "<h1>Mazání souboru</h1>");
+            web_send_chunk(req, "<div class='card'><p><span class='bad'>Koš je plný pro tento soubor.</span></p><p><b>");
+            web_send_html_escaped(req, filename);
+            web_send_chunk(req, "</b></p><p>V koši jsou už obsazené přípony .000 až .999.</p></div>");
+            web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a> <a class='btn' href='/files?mode=trash'>Koš</a></p>");
+            web_send_html_footer(req);
+            return ESP_OK;
+        }
+
+        // Aktuální soubor se přesouvá do koše jen samostatně:
         // 1) případný rozpracovaný segment se uzavře do starého souboru,
         // 2) RAM session se vynuluje,
-        // 3) starý aktuální soubor se smaže,
+        // 3) starý aktuální soubor se přesune do koše,
         // 4) až potom se založí nový EDL soubor.
         //
-        // Důležité: nový název se hledá až po smazání starého aktuálního souboru,
+        // Důležité: nový název se hledá až po přesunu starého aktuálního souboru,
         // aby se při mazání posledního souboru dne nezapočítával soubor, který právě mažeme.
         (void)cut_event_close_active_segment_from_state();
         cut_event_reset_session();
 
-        bool deleted_ok = (remove(path) == 0);
+        bool deleted_ok = (web_move_file_to_trash(filename, false) == ESP_OK);
         esp_err_t session_ret = ESP_FAIL;
 
         if (deleted_ok) {
@@ -2423,17 +3041,28 @@ static esp_err_t web_delete_do_handler(httpd_req_t *req)
         web_send_chunk(req, "</b></p><p>Nový aktuální soubor: <b>");
         web_send_html_escaped(req, logger_session_get_filename());
         web_send_chunk(req, "</b></p></div>");
-    } else if (remove(path) == 0) {
-        return web_redirect_to_files(req);
     } else {
-        web_send_html_header(req, "ATEM Logger - chyba mazání");
+        esp_err_t move_ret = trashed ? (remove(path) == 0 ? ESP_OK : ESP_FAIL) : web_move_file_to_trash(filename, archived);
+        if (move_ret == ESP_OK) {
+            return web_redirect_to_files_location(req, archived, trashed);
+        }
+
+        web_send_html_header(req, move_ret == ESP_ERR_NO_MEM ? "ATEM Logger - koš je plný" : "ATEM Logger - chyba mazání");
         web_send_chunk(req, "<h1>Mazání souboru</h1>");
-        web_send_chunk(req, "<div class='card'><p><span class='bad'>Soubor se nepodařilo smazat.</span></p><p><b>");
-        web_send_html_escaped(req, filename);
-        web_send_chunk(req, "</b></p></div>");
+        if (move_ret == ESP_ERR_NO_MEM) {
+            web_send_chunk(req, "<div class='card'><p><span class='bad'>Koš je plný pro tento soubor.</span></p><p><b>");
+            web_send_html_escaped(req, filename);
+            web_send_chunk(req, "</b></p><p>V koši jsou už obsazené přípony .000 až .999.</p></div>");
+        } else {
+            web_send_chunk(req, "<div class='card'><p><span class='bad'>Soubor se nepodařilo smazat.</span></p><p><b>");
+            web_send_html_escaped(req, filename);
+            web_send_chunk(req, "</b></p></div>");
+        }
     }
 
-    web_send_chunk(req, "<p><a class='btn' href='/files'>Zpět na soubory</a></p>");
+    web_send_chunk(req, "<p><a class='btn' href='");
+    web_send_chunk(req, trashed ? "/files?mode=trash" : (archived ? "/files?mode=archive" : "/files"));
+    web_send_chunk(req, "'>Zpět na soubory</a></p>");
     web_send_html_footer(req);
     return ESP_OK;
 }
@@ -2442,6 +3071,8 @@ static esp_err_t web_download_handler(httpd_req_t *req)
 {
     char filename[WEB_FILE_NAME_MAX_LEN] = {0};
     char path[WEB_FILE_PATH_MAX_LEN] = {0};
+    bool archived = web_query_has_archive(req);
+    bool trashed = web_query_has_trash(req);
 
     if (!sd_storage_is_mounted()) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card is not mounted");
@@ -2449,7 +3080,7 @@ static esp_err_t web_download_handler(httpd_req_t *req)
     }
 
     if (web_get_query_filename(req, filename, sizeof(filename)) != ESP_OK ||
-        web_make_file_path(filename, path, sizeof(path)) != ESP_OK) {
+        web_make_file_path_for_query_location(filename, archived, trashed, path, sizeof(path)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid file parameter");
         return ESP_OK;
     }
@@ -2464,7 +3095,7 @@ static esp_err_t web_download_handler(httpd_req_t *req)
 
     char download_filename[128] = {0};
     char edl_title[SHOW_CONFIG_TITLE_MAX_LEN] = {0};
-    (void)web_read_edl_info_for_file(filename, edl_title, sizeof(edl_title));
+    (void)web_read_edl_info_for_file_location(filename, archived, trashed, edl_title, sizeof(edl_title));
     web_make_download_filename_from_title(edl_title, download_filename, sizeof(download_filename));
     if (download_filename[0] == '\0') {
         snprintf(download_filename, sizeof(download_filename), "%s", filename);
@@ -2496,7 +3127,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 19;
+    config.max_uri_handlers = 20;
     config.stack_size = WEB_SERVER_TASK_STACK;
     config.core_id = WEB_SERVER_TASK_CORE;
     config.lru_purge_enable = true;
@@ -2585,17 +3216,24 @@ esp_err_t web_server_start(void)
         .user_ctx = NULL,
     };
 
-    httpd_uri_t protect_uri = {
-        .uri = "/protect",
-        .method = HTTP_GET,
-        .handler = web_protect_handler,
-        .user_ctx = NULL,
-    };
-
     httpd_uri_t files_uri = {
         .uri = "/files",
         .method = HTTP_GET,
         .handler = web_files_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t archive_uri = {
+        .uri = "/archive",
+        .method = HTTP_GET,
+        .handler = web_archive_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t trash_uri = {
+        .uri = "/trash",
+        .method = HTTP_GET,
+        .handler = web_trash_handler,
         .user_ctx = NULL,
     };
 
@@ -2652,8 +3290,9 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_shows_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &rtc_sync_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &reboot_uri));
-    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &protect_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &files_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &archive_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &trash_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &view_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &download_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &delete_uri));

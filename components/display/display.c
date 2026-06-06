@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_state.h"
+#include "cut_event.h"
 #include "ssd1306.h"
 #include "i2c_bus.h"
 #include "freertos/FreeRTOS.h"
@@ -76,6 +77,35 @@ static void display_print_bus_value(int area_x, const char *label, const char *v
     // Y souřadnice jsou nastavené tak, aby byly opticky zarovnané na střed.
     ssd1306_print_scaled(x, 17, label, label_scale);
     ssd1306_print_scaled(x + label_w + gap, 13, value, value_scale);
+}
+
+static void display_format_uint_spaces(uint32_t value, char *out, size_t out_size)
+{
+    char raw[16];
+    char formatted[24];
+    size_t raw_len;
+    size_t out_pos = 0;
+
+    if (!out || out_size == 0U) {
+        return;
+    }
+
+    snprintf(raw, sizeof(raw), "%lu", (unsigned long)value);
+    raw_len = strlen(raw);
+
+    for (size_t i = 0; i < raw_len && out_pos + 1U < sizeof(formatted); i++) {
+        size_t remaining = raw_len - i;
+        if (i > 0U && (remaining % 3U) == 0U) {
+            formatted[out_pos++] = ' ';
+            if (out_pos + 1U >= sizeof(formatted)) {
+                break;
+            }
+        }
+        formatted[out_pos++] = raw[i];
+    }
+
+    formatted[out_pos] = '\0';
+    snprintf(out, out_size, "%s", formatted);
 }
 
 esp_err_t display_init(void)
@@ -169,7 +199,8 @@ esp_err_t display_show_main_screen(void)
     app_state_get_snapshot(&state);
 
     char line_status[24];
-    char line_file[24];
+    char line_cuts[32];
+    char cut_count_text[16];
     char pgm_text[8];
     char pvw_text[8];
     char tc_text[16];
@@ -199,12 +230,8 @@ esp_err_t display_show_main_screen(void)
         snprintf(tc_text, sizeof(tc_text), "--:--:--:--");
     }
 
-    snprintf(
-        line_file,
-        sizeof(line_file),
-        "FILE %.16s",
-        state.current_filename
-    );
+    display_format_uint_spaces(cut_event_get_cut_count(), cut_count_text, sizeof(cut_count_text));
+    snprintf(line_cuts, sizeof(line_cuts), "Pocet strihu: %s", cut_count_text);
 
     esp_err_t ret = ssd1306_clear();
     if (ret != ESP_OK) {
@@ -221,8 +248,8 @@ esp_err_t display_show_main_screen(void)
     // TCx2 zůstává velký, jen jemně vystředěný.
     display_print_centered(34, tc_text, 2);
 
-    // Spodní řádek se souborem vystředěný.
-    display_print_centered(57, line_file, 1);
+    // Spodní řádek s počtem střihů aktuální EDL session.
+    display_print_centered(57, line_cuts, 1);
 
     return ssd1306_show();
 }
