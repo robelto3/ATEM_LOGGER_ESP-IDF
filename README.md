@@ -1,6 +1,6 @@
 # ATEM Logger ESP-IDF
 
-Projekt pro záznam střihů z ATEM switcheru do EDL souborů s využitím ESP32-P4.
+Projekt pro záznam střihů z ATEM switcheru do EDL souborů s využitím ESP32-P4-ETH.
 
 Cílem je vytvořit samostatný logger, který sleduje změny Program vstupu na ATEMu, čte LTC timecode, ukládá střihové události na SD kartu a umožňuje základní ovládání a kontrolu přes webové rozhraní a OLED displej.
 
