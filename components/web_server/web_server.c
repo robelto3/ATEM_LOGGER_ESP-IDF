@@ -263,6 +263,10 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".home-head .rtc-link:hover{text-decoration:underline;}"
         ".home-head .rtc-link:hover .rtc-time{text-decoration:underline;}"
         ".home-top .btn:last-child{margin-right:0;}"
+        ".settings-note{display:block;margin-top:2px;margin-bottom:12px;}"
+        ".settings-note-ltc{margin-bottom:20px;}"
+        ".settings-ip-save{margin-top:0;}"
+        ".settings-section-spaced{margin-top:28px;}"
         ".selectcheck{accent-color:crimson;min-width:0;width:auto;margin:0;}"
         ".table-wrap{overflow-x:auto;max-width:100%;}"
         ".select-cell{text-align:center;width:32px;padding-left:4px;padding-right:4px;}"
@@ -296,9 +300,10 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         "pre{background:#050505;border:1px solid #333;border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;}"
         ".btn{display:inline-block;background:#2c2c2c;border:1px solid #555;border-radius:8px;padding:8px 12px;margin:4px 8px 4px 0;}"
         "button.btn{appearance:none;-webkit-appearance:none;cursor:pointer;color:#eee;font-family:inherit;font-size:14px;line-height:normal;}button.btn:disabled{opacity:.45;cursor:not-allowed;}"
+        "button.btn.settings-btn{height:39px;padding:0 12px;line-height:37px;}"
         "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:14px;line-height:normal;}"
         ".btn-active{background:#3a101a;border-color:crimson;color:#fff;font-weight:bold;}.btn-active:hover{background:#4a1420;text-decoration:none;}.del{color:#ff7777;}.danger{background:#3a1b1b;border-color:#884444;color:#ffb0b0;}"
-        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}label{display:block;margin-top:8px;}small{color:#aaa;}"
+        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}input.settings-field,button.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button{font-size:16px;}.settings-card small{font-size:15px;}"
         ".show-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px 0;}"
         ".show-label{display:inline-block;min-width:120px;margin:0;}"
         ".show-name{min-width:260px;width:360px;max-width:100%;margin:0;}"
@@ -1618,7 +1623,7 @@ static void web_send_ip_input(httpd_req_t *req, const char *label, const char *n
 {
     web_send_chunk(req, "<label>");
     web_send_html_escaped(req, label);
-    web_send_chunk(req, "</label><input name='");
+    web_send_chunk(req, "</label><input class='settings-field' name='");
     web_send_html_escaped(req, name);
     web_send_chunk(req, "' value='");
     web_send_html_escaped(req, value);
@@ -1630,29 +1635,45 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char netmask[NET_CONFIG_IP_STR_LEN] = {0};
+    char ltc_correction_text[16] = {0};
 
     net_config_get_server_ip_string(server_ip, sizeof(server_ip));
     net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
     net_config_get_netmask_string(netmask, sizeof(netmask));
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
+    int ltc_correction = net_config_get_ltc_frame_correction();
+    snprintf(ltc_correction_text, sizeof(ltc_correction_text), "%d", ltc_correction);
 
     web_send_html_header(req, "ATEM Logger - nastavení");
     web_send_chunk(req, "<h1>Nastavení</h1>");
     web_send_chunk(req, "<p><a class='btn' href='/'>Home</a></p>");
 
-    web_send_chunk(req, "<div class='card'>");
+    web_send_chunk(req, "<div class='card settings-card'>");
     web_send_chunk(req, "<form action='/save_preview_tally' method='get'>");
-    web_send_chunk(req, "<p><label>Preview Tally: <input class='setting-check' type='checkbox' name='enabled' value='1' onchange='this.form.submit()'");
+    web_send_chunk(req, "<label>Preview Tally: <input class='setting-check' type='checkbox' name='enabled' value='1' onchange='this.form.submit()'");
     if (preview_tally_enabled) {
         web_send_chunk(req, " checked");
     }
-    web_send_chunk(req, "></label><br><small>Zaškrtnuto = zelené Preview tally výstupy jsou aktivní. Odškrtnuto = PVW výstupy jsou zhasnuté. Změna se uloží hned.</small></p>");
+    web_send_chunk(req, "></label><small class='settings-note'>Zaškrtnuto = zelené Preview tally výstupy jsou aktivní. Odškrtnuto = PVW výstupy jsou zhasnuté. Změna se uloží hned.</small>");
     web_send_chunk(req, "</form>");
 
-    web_send_chunk(req, "<form action='/save_network' method='get'>");
-    web_send_ip_input(req, "IP ESP / web serveru", "server_ip", server_ip);
+    web_send_chunk(req, "<form class='settings-section-spaced' action='/save_ltc_correction' method='get'>");
+    web_send_chunk(req, "<label>Korekce LTC</label><input class='settings-field' name='correction' type='number' min='");
+    snprintf(ltc_correction_text, sizeof(ltc_correction_text), "%d", NET_CONFIG_LTC_CORRECTION_MIN);
+    web_send_html_escaped(req, ltc_correction_text);
+    web_send_chunk(req, "' max='");
+    snprintf(ltc_correction_text, sizeof(ltc_correction_text), "%d", NET_CONFIG_LTC_CORRECTION_MAX);
+    web_send_html_escaped(req, ltc_correction_text);
+    web_send_chunk(req, "' step='1' value='");
+    snprintf(ltc_correction_text, sizeof(ltc_correction_text), "%d", ltc_correction);
+    web_send_html_escaped(req, ltc_correction_text);
+    web_send_chunk(req, "' style='width:65px;min-width:65px;text-align:center'> <button class='btn settings-btn settings-field' type='submit'>Uložit korekci LTC</button><small class='settings-note settings-note-ltc'>Zadává se ve framech vstupního LTC 25 fps. Záporná hodnota posune logovaný TC zpět.</small>");
+    web_send_chunk(req, "</form>");
+
+    web_send_chunk(req, "<form class='settings-section-spaced' action='/save_network' method='get'>");
+    web_send_ip_input(req, "IP loggeru/web serveru", "server_ip", server_ip);
     web_send_ip_input(req, "IP ATEM switcheru", "atem_ip", atem_ip);
-    web_send_chunk(req, "<p><button class='btn' type='submit'>Uložit nastavení IP</button></p>");
+    web_send_chunk(req, "<p class='settings-ip-save'><button class='btn settings-btn settings-field' type='submit'>Uložit nastavení IP</button></p>");
     web_send_chunk(req, "</form>");
     web_send_chunk(req, "<p><small>Maska je pevně ");
     web_send_html_escaped(req, netmask);
@@ -1686,6 +1707,52 @@ static esp_err_t web_save_preview_tally_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Location", back_home ? "/" : "/network");
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_sendstr(req, back_home ? "Redirecting to Home" : "Redirecting to settings");
+    return ESP_OK;
+}
+
+static esp_err_t web_save_ltc_correction_handler(httpd_req_t *req)
+{
+    char correction_text[16] = {0};
+    char *end = NULL;
+    long correction = 0;
+
+    bool has_correction = (web_get_query_value(req, "correction", correction_text, sizeof(correction_text)) == ESP_OK);
+    if (has_correction) {
+        correction = strtol(correction_text, &end, 10);
+        if (end == correction_text || *end != '\0' ||
+            correction < NET_CONFIG_LTC_CORRECTION_MIN ||
+            correction > NET_CONFIG_LTC_CORRECTION_MAX) {
+            has_correction = false;
+        }
+    }
+
+    esp_err_t ret = has_correction
+        ? net_config_set_ltc_frame_correction((int)correction)
+        : ESP_ERR_INVALID_ARG;
+
+    if (ret != ESP_OK) {
+        web_send_html_header(req, "ATEM Logger - nastavení");
+        web_send_chunk(req, "<h1>Nastavení</h1>");
+        web_send_chunk(req, "<div class='card'><p><span class='bad'>Korekci LTC se nepodařilo uložit.</span></p>");
+        web_send_chunk(req, "<p>Povolený rozsah je ");
+        char range_text[48];
+        snprintf(
+            range_text,
+            sizeof(range_text),
+            "%d až %+d framů.",
+            NET_CONFIG_LTC_CORRECTION_MIN,
+            NET_CONFIG_LTC_CORRECTION_MAX
+        );
+        web_send_html_escaped(req, range_text);
+        web_send_chunk(req, "</p><p><a class='btn' href='/network'>Zpět na nastavení</a></p></div>");
+        web_send_html_footer(req);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/network");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Redirecting to settings");
     return ESP_OK;
 }
 
@@ -3127,7 +3194,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 21;
     config.stack_size = WEB_SERVER_TASK_STACK;
     config.core_id = WEB_SERVER_TASK_CORE;
     config.lru_purge_enable = true;
@@ -3185,6 +3252,13 @@ esp_err_t web_server_start(void)
         .uri = "/save_preview_tally",
         .method = HTTP_GET,
         .handler = web_save_preview_tally_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t save_ltc_correction_uri = {
+        .uri = "/save_ltc_correction",
+        .method = HTTP_GET,
+        .handler = web_save_ltc_correction_handler,
         .user_ctx = NULL,
     };
 
@@ -3286,6 +3360,7 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_preview_tally_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_ltc_correction_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &shows_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_shows_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &rtc_sync_uri));

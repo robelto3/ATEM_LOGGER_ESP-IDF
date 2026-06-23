@@ -4,6 +4,11 @@
 
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "net_config.h"
+
+#define APP_STATE_LTC_INPUT_FPS 25
+#define APP_STATE_SECONDS_PER_DAY (24 * 60 * 60)
+#define APP_STATE_LTC_FRAMES_PER_DAY (APP_STATE_SECONDS_PER_DAY * APP_STATE_LTC_INPUT_FPS)
 
 static app_state_snapshot_t s_state;
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -17,12 +22,35 @@ static uint32_t app_state_now_ms(void)
 static ltc_time_t app_state_make_output_tc(const ltc_time_t *ltc)
 {
     ltc_time_t out = {0};
+    int total_frames = 0;
+    int correction = 0;
 
     if (!ltc) {
         return out;
     }
 
     out = *ltc;
+
+    correction = net_config_get_ltc_frame_correction();
+    if (correction != 0) {
+        total_frames =
+            (((int)ltc->hours * 60 + (int)ltc->minutes) * 60 + (int)ltc->seconds) *
+            APP_STATE_LTC_INPUT_FPS +
+            (int)ltc->frames +
+            correction;
+
+        total_frames %= APP_STATE_LTC_FRAMES_PER_DAY;
+        if (total_frames < 0) {
+            total_frames += APP_STATE_LTC_FRAMES_PER_DAY;
+        }
+
+        out.hours = (uint8_t)(total_frames / (60 * 60 * APP_STATE_LTC_INPUT_FPS));
+        total_frames %= (60 * 60 * APP_STATE_LTC_INPUT_FPS);
+        out.minutes = (uint8_t)(total_frames / (60 * APP_STATE_LTC_INPUT_FPS));
+        total_frames %= (60 * APP_STATE_LTC_INPUT_FPS);
+        out.seconds = (uint8_t)(total_frames / APP_STATE_LTC_INPUT_FPS);
+        out.frames = (uint8_t)(total_frames % APP_STATE_LTC_INPUT_FPS);
+    }
 
     // LTC vstup běží 25 fps, ale pro display/eventy/EDL chceme
     // sudý výstupní frame v rozsahu 00..48.

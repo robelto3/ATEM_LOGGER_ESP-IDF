@@ -1,5 +1,6 @@
 #include "net_config.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,6 +13,7 @@
 #define NET_CONFIG_NVS_KEY_SERVER_IP "server_ip"
 #define NET_CONFIG_NVS_KEY_ATEM_IP   "atem_ip"
 #define NET_CONFIG_NVS_KEY_PREVIEW_TALLY "preview_tally"
+#define NET_CONFIG_NVS_KEY_LTC_CORRECTION "ltc_corr"
 
 static const char *TAG = "NET_CONFIG";
 
@@ -19,6 +21,7 @@ static portMUX_TYPE s_config_mux = portMUX_INITIALIZER_UNLOCKED;
 static net_config_ip4_t s_server_ip = {10, 0, 0, 9};
 static net_config_ip4_t s_atem_ip = {10, 0, 0, 10};
 static bool s_preview_tally_enabled = true;
+static int s_ltc_frame_correction = 0;
 static bool s_initialized = false;
 
 static bool net_config_is_usable_host_ip(const net_config_ip4_t *ip)
@@ -164,6 +167,31 @@ static bool net_config_read_bool_from_nvs(nvs_handle_t handle, const char *key, 
     return false;
 }
 
+static bool net_config_read_int_from_nvs(nvs_handle_t handle, const char *key, int min_value, int max_value, int *value)
+{
+    if (!key || !value || min_value > max_value) {
+        return false;
+    }
+
+    int32_t stored = 0;
+    esp_err_t ret = nvs_get_i32(handle, key, &stored);
+    if (ret == ESP_OK) {
+        if (stored < min_value || stored > max_value) {
+            ESP_LOGW(TAG, "Stored int for key '%s' is out of range: %" PRId32, key, stored);
+            return false;
+        }
+
+        *value = (int)stored;
+        return true;
+    }
+
+    if (ret != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Read int key '%s' failed: %s", key, esp_err_to_name(ret));
+    }
+
+    return false;
+}
+
 esp_err_t net_config_init(void)
 {
     if (s_initialized) {
@@ -179,9 +207,11 @@ esp_err_t net_config_init(void)
     net_config_ip4_t loaded_server_ip = {0};
     net_config_ip4_t loaded_atem_ip = {0};
     bool loaded_preview_tally_enabled = true;
+    int loaded_ltc_frame_correction = 0;
     bool loaded_server_ok = false;
     bool loaded_atem_ok = false;
     bool loaded_preview_tally_ok = false;
+    bool loaded_ltc_correction_ok = false;
 
     nvs_handle_t handle = 0;
     ret = nvs_open(NET_CONFIG_NVS_NAMESPACE, NVS_READONLY, &handle);
@@ -189,6 +219,13 @@ esp_err_t net_config_init(void)
         loaded_server_ok = net_config_read_ip_from_nvs(handle, NET_CONFIG_NVS_KEY_SERVER_IP, &loaded_server_ip);
         loaded_atem_ok = net_config_read_ip_from_nvs(handle, NET_CONFIG_NVS_KEY_ATEM_IP, &loaded_atem_ip);
         loaded_preview_tally_ok = net_config_read_bool_from_nvs(handle, NET_CONFIG_NVS_KEY_PREVIEW_TALLY, &loaded_preview_tally_enabled);
+        loaded_ltc_correction_ok = net_config_read_int_from_nvs(
+            handle,
+            NET_CONFIG_NVS_KEY_LTC_CORRECTION,
+            NET_CONFIG_LTC_CORRECTION_MIN,
+            NET_CONFIG_LTC_CORRECTION_MAX,
+            &loaded_ltc_frame_correction
+        );
         nvs_close(handle);
     } else if (ret != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "Open NVS namespace failed: %s", esp_err_to_name(ret));
@@ -208,6 +245,7 @@ esp_err_t net_config_init(void)
     }
 
     s_preview_tally_enabled = loaded_preview_tally_ok ? loaded_preview_tally_enabled : true;
+    s_ltc_frame_correction = loaded_ltc_correction_ok ? loaded_ltc_frame_correction : 0;
 
     s_initialized = true;
     portEXIT_CRITICAL(&s_config_mux);
@@ -220,6 +258,7 @@ esp_err_t net_config_init(void)
     ESP_LOGI(TAG, "Server IP: %s%s", server_ip_str, loaded_server_ok ? " (NVS)" : " (default)");
     ESP_LOGI(TAG, "ATEM IP:   %s%s", atem_ip_str, loaded_atem_ok ? " (NVS)" : " (default)");
     ESP_LOGI(TAG, "Preview tally: %s%s", s_preview_tally_enabled ? "ON" : "OFF", loaded_preview_tally_ok ? " (NVS)" : " (default)");
+    ESP_LOGI(TAG, "LTC correction: %+d frame(s)%s", s_ltc_frame_correction, loaded_ltc_correction_ok ? " (NVS)" : " (default)");
 
     return ESP_OK;
 }
@@ -367,5 +406,55 @@ esp_err_t net_config_set_preview_tally_enabled(bool enabled)
     portEXIT_CRITICAL(&s_config_mux);
 
     ESP_LOGI(TAG, "Preview tally saved: %s", enabled ? "ON" : "OFF");
+    return ESP_OK;
+}
+
+int net_config_get_ltc_frame_correction(void)
+{
+    int correction = 0;
+
+    portENTER_CRITICAL(&s_config_mux);
+    correction = s_ltc_frame_correction;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    return correction;
+}
+
+esp_err_t net_config_set_ltc_frame_correction(int correction_frames)
+{
+    if (correction_frames < NET_CONFIG_LTC_CORRECTION_MIN ||
+        correction_frames > NET_CONFIG_LTC_CORRECTION_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_config_mux);
+    int old_correction = s_ltc_frame_correction;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    if (old_correction == correction_frames) {
+        return ESP_OK;
+    }
+
+    nvs_handle_t handle = 0;
+    esp_err_t ret = nvs_open(NET_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_set_i32(handle, NET_CONFIG_NVS_KEY_LTC_CORRECTION, (int32_t)correction_frames);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    portENTER_CRITICAL(&s_config_mux);
+    s_ltc_frame_correction = correction_frames;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    ESP_LOGI(TAG, "LTC correction saved: %+d frame(s)", correction_frames);
     return ESP_OK;
 }

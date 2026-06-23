@@ -49,6 +49,13 @@ esp_err_t net_config_set_atem_ip_string(const char *ip_text);
 bool net_config_get_preview_tally_enabled(void);
 esp_err_t net_config_set_preview_tally_enabled(bool enabled);
 
+// Korekce vstupního LTC v původních 25fps framech.
+// Záporná hodnota posune logovaný TC zpět, kladná dopředu.
+#define NET_CONFIG_LTC_CORRECTION_MIN -24
+#define NET_CONFIG_LTC_CORRECTION_MAX 24
+int net_config_get_ltc_frame_correction(void);
+esp_err_t net_config_set_ltc_frame_correction(int correction_frames);
+
 #ifdef __cplusplus
 }
 #endif
