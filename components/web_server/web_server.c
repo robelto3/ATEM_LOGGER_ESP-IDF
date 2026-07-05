@@ -300,10 +300,10 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         "pre{background:#050505;border:1px solid #333;border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;}"
         ".btn{display:inline-block;background:#2c2c2c;border:1px solid #555;border-radius:8px;padding:8px 12px;margin:4px 8px 4px 0;}"
         "button.btn{appearance:none;-webkit-appearance:none;cursor:pointer;color:#eee;font-family:inherit;font-size:14px;line-height:normal;}button.btn:disabled{opacity:.45;cursor:not-allowed;}"
-        "button.btn.settings-btn{height:39px;padding:0 12px;line-height:37px;}"
-        "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:14px;line-height:normal;}"
+        "button.btn.settings-btn,a.btn.settings-btn{height:39px;padding:0 12px;line-height:37px;}"
+        "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:16px;line-height:normal;}"
         ".btn-active{background:#3a101a;border-color:crimson;color:#fff;font-weight:bold;}.btn-active:hover{background:#4a1420;text-decoration:none;}.del{color:#ff7777;}.danger{background:#3a1b1b;border-color:#884444;color:#ffb0b0;}"
-        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}input.settings-field,button.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button{font-size:16px;}.settings-card small{font-size:15px;}"
+        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}input.settings-field,button.btn.settings-field,a.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button,.settings-card a.btn{font-size:16px;}.settings-card small{font-size:15px;}"
         ".show-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px 0;}"
         ".show-label{display:inline-block;min-width:120px;margin:0;}"
         ".show-name{min-width:260px;width:360px;max-width:100%;margin:0;}"
@@ -1673,7 +1673,7 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     web_send_chunk(req, "<form class='settings-section-spaced' action='/save_network' method='get'>");
     web_send_ip_input(req, "IP loggeru/web serveru", "server_ip", server_ip);
     web_send_ip_input(req, "IP ATEM switcheru", "atem_ip", atem_ip);
-    web_send_chunk(req, "<p class='settings-ip-save'><button class='btn settings-btn settings-field' type='submit'>Uložit nastavení IP</button></p>");
+    web_send_chunk(req, "<p class='settings-ip-save'><button class='btn settings-btn settings-field' type='submit'>Uložit nastavení IP</button> <a class='btn settings-btn settings-field' href='/reboot' onclick=\"return confirm('Opravdu restartovat logger?')\">Reboot</a></p>");
     web_send_chunk(req, "</form>");
     web_send_chunk(req, "<p><small>Maska je pevně ");
     web_send_html_escaped(req, netmask);

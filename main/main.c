@@ -55,13 +55,20 @@ void app_main(void)
     // Stav ochrany je uložený v NVS.
     ESP_ERROR_CHECK(file_protect_init());
 
-    ESP_ERROR_CHECK(display_init());
-
-    char startup_server_ip[NET_CONFIG_IP_STR_LEN];
-    char startup_atem_ip[NET_CONFIG_IP_STR_LEN];
-    net_config_get_server_ip_string(startup_server_ip, sizeof(startup_server_ip));
-    net_config_get_atem_ip_string(startup_atem_ip, sizeof(startup_atem_ip));
-    ESP_ERROR_CHECK(display_show_startup_screen(startup_server_ip, startup_atem_ip));
+    // OLED není kritický pro běh loggeru, webu ani záznamu na SD.
+    esp_err_t display_ret = display_init();
+    if (display_ret == ESP_OK) {
+        char startup_server_ip[NET_CONFIG_IP_STR_LEN];
+        char startup_atem_ip[NET_CONFIG_IP_STR_LEN];
+        net_config_get_server_ip_string(startup_server_ip, sizeof(startup_server_ip));
+        net_config_get_atem_ip_string(startup_atem_ip, sizeof(startup_atem_ip));
+        esp_err_t startup_ret = display_show_startup_screen(startup_server_ip, startup_atem_ip);
+        if (startup_ret != ESP_OK && debug_control_is_enabled()) {
+            printf("DISPLAY: startup screen FAILED: %s\n", esp_err_to_name(startup_ret));
+        }
+    } else if (debug_control_is_enabled()) {
+        printf("DISPLAY: init FAILED: %s\n", esp_err_to_name(display_ret));
+    }
 
     ESP_ERROR_CHECK(rtc_init());
 
