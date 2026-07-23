@@ -38,6 +38,46 @@ Projekt je stavěný pro:
 
 OLED není kritický pro start zařízení. Pokud displej chybí nebo neodpovídá, logger, Ethernet, web i SD část běží dál.
 
+## Orientační Piny Hardwaru
+
+Toto je základní orientační seznam, než bude doplněné kompletní schéma a dokumentace DPS.
+
+Vstupy a I2C:
+
+- LTC vstup: `GPIO4`
+- tlačítko uzavřít aktuální soubor a vytvořit nový EDL: `GPIO5`, tlačítko proti GND, interní pull-up
+- fake cut testovací tlačítko: `GPIO46`, tlačítko proti GND, interní pull-up
+- I2C SDA pro OLED/RTC: `GPIO7`
+- I2C SCL pro OLED/RTC: `GPIO8`
+
+SD karta:
+
+- CLK: `GPIO43`
+- CMD: `GPIO44`
+- D0: `GPIO39`
+- D1: `GPIO40`
+- D2: `GPIO41`
+- D3: `GPIO42`
+- napájení SD: `GPIO45`, aktivní v LOW
+
+Ethernet RMII:
+
+- MDC: `GPIO31`
+- MDIO: `GPIO52`
+- PHY reset: `GPIO51`
+- RMII clock: `GPIO50`
+
+Tally výstupy:
+
+- PGM 1-8: `GPIO6`, `GPIO14`, `GPIO15`, `GPIO16`, `GPIO17`, `GPIO18`, `GPIO19`, `GPIO54`
+- PVW 1-8: `GPIO33`, `GPIO32`, `GPIO27`, `GPIO26`, `GPIO23`, `GPIO22`, `GPIO21`, `GPIO20`
+
+Důležité poznámky:
+
+- LTC vstup potřebuje externí vstupní tvarovač. Do GPIO ESP32 nepřipojujte přímo surový audio LTC signál.
+- RTC je externí modul DS3231 připojený na společnou I2C sběrnici.
+- OLED a RTC sdílí stejnou I2C sběrnici.
+
 ## Výchozí Síť
 
 Výchozí adresy:

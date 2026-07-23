@@ -38,6 +38,46 @@ The project is built for:
 
 The OLED display is not required for startup. If the display is missing or does not respond, the logger, Ethernet, web server and SD card parts continue running.
 
+## Hardware Pin Orientation
+
+This is a basic orientation list until a full schematic/PCB documentation is added.
+
+Inputs and I2C:
+
+- LTC input: `GPIO4`
+- Close current file and create new EDL button: `GPIO5`, button to GND, internal pull-up
+- Fake cut test button: `GPIO46`, button to GND, internal pull-up
+- I2C SDA for OLED/RTC: `GPIO7`
+- I2C SCL for OLED/RTC: `GPIO8`
+
+SD card:
+
+- CLK: `GPIO43`
+- CMD: `GPIO44`
+- D0: `GPIO39`
+- D1: `GPIO40`
+- D2: `GPIO41`
+- D3: `GPIO42`
+- SD power enable: `GPIO45`, active low
+
+Ethernet RMII:
+
+- MDC: `GPIO31`
+- MDIO: `GPIO52`
+- PHY reset: `GPIO51`
+- RMII clock: `GPIO50`
+
+Tally outputs:
+
+- PGM 1-8: `GPIO6`, `GPIO14`, `GPIO15`, `GPIO16`, `GPIO17`, `GPIO18`, `GPIO19`, `GPIO54`
+- PVW 1-8: `GPIO33`, `GPIO32`, `GPIO27`, `GPIO26`, `GPIO23`, `GPIO22`, `GPIO21`, `GPIO20`
+
+Important notes:
+
+- The LTC input needs an external input shaper/conditioner. Do not feed raw audio LTC directly into the ESP32 GPIO.
+- The RTC is an external DS3231 module connected to the shared I2C bus.
+- OLED and RTC share the same I2C bus.
+
 ## Default Network
 
 Default addresses:
