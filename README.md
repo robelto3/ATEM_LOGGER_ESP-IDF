@@ -1,107 +1,109 @@
 # ATEM Logger ESP-IDF
 
-ATEM Logger je samostatný logger pro ESP32-P4-ETH, který sleduje Program/Preview stav ATEM switcheru, čte LTC timecode a zapisuje střihové události do CMX EDL souborů na SD kartu.
+[Česká verze](README.cs.md)
 
-Projekt je určený pro workflow, kde referenční LTC běží na 25 fps, ale EDL se používá pro 50p střih. Logger proto ukládá čas jako TCx2: frame z LTC 25 fps se násobí dvěma a nedopočítávají se liché snímky.
+ATEM Logger is a standalone ESP32-P4-ETH based logger for Blackmagic ATEM switchers. It monitors Program/Preview state, reads LTC timecode, and writes edit events into CMX EDL files on an SD card.
 
-## Hlavní Funkce
+The project is designed for a workflow where the reference LTC runs at 25 fps, while the resulting EDL is used for 50p editing. The logger stores timecode as TCx2: each 25 fps LTC frame is multiplied by two and missing odd frames are not generated.
 
-- čtení ATEM Program / Preview přes Ethernet a UDP parser příkazů `PrgI` a `PrvI`,
-- záznam změn Program vstupu jako EDL eventy,
-- čtení LTC 25 fps a převod na TCx2 pro EDL i OLED,
-- nastavitelná korekce LTC ve framech původního 25fps LTC,
-- automatické zakládání EDL souborů na SD kartě,
-- uložené názvy pořadů a automatický `TITLE:` v EDL,
-- počítání střihů od založení aktuálního souboru,
-- webové rozhraní pro Home, soubory, archiv, koš, názvy pořadů, nastavení a About,
-- samostatně vypínatelné Program Tally a Preview Tally,
-- OLED stavová obrazovka a startovací IP obrazovka,
-- RTC synchronizace z času prohlížeče,
-- softwarový reboot z webu s návratem na Home a přechodem na novou IP loggeru,
-- fake cut vstup pro testování bez fyzického ATEMu.
+## Main Features
+
+- ATEM Program / Preview reading over Ethernet using the `PrgI` and `PrvI` UDP commands,
+- logging Program bus changes as EDL events,
+- LTC 25 fps input and TCx2 conversion for EDL and OLED display,
+- configurable LTC correction in original 25 fps LTC frames,
+- automatic EDL file creation on the SD card,
+- stored show names and automatic `TITLE:` lines in EDL files,
+- cut counter for the current EDL file,
+- web interface for Home, files, archive, trash, show names, settings and About,
+- independently switchable Program Tally and Preview Tally outputs,
+- OLED status screen and startup IP screen,
+- RTC synchronization from the browser time,
+- software reboot from the web interface with Home redirect and automatic jump to the new logger IP,
+- fake cut input for testing without a physical ATEM switcher.
 
 ## Hardware
 
-Projekt je stavěný pro:
+The project is built for:
 
 - ESP32-P4-ETH,
-- Ethernet připojení k ATEM switcheru,
-- SD kartu přes SDMMC,
-- OLED displej SSD1306 přes I2C,
-- RTC DS3231 přes I2C,
-- LTC vstup,
-- tlačítko pro uzavření aktuální EDL session a založení nové,
-- fake cut tlačítko,
-- Program/Preview tally výstupy.
+- Ethernet connection to an ATEM switcher,
+- SD card over SDMMC,
+- SSD1306 OLED display over I2C,
+- DS3231 RTC over I2C,
+- LTC input,
+- button for closing the current EDL session and creating a new one,
+- fake cut button,
+- Program/Preview tally outputs.
 
-OLED není kritický pro start zařízení. Pokud displej chybí nebo neodpovídá, logger, Ethernet, web i SD část běží dál.
+The OLED display is not required for startup. If the display is missing or does not respond, the logger, Ethernet, web server and SD card parts continue running.
 
-## Výchozí Síť
+## Default Network
 
-Výchozí adresy:
+Default addresses:
 
 - logger / web server: `10.0.0.9`
 - ATEM switcher: `10.0.0.10`
-- maska: `255.255.255.0`
+- netmask: `255.255.255.0`
 
-IP adresy se ukládají do NVS a lze je měnit na stránce `Nastavení`. Po změně IP loggeru je nejčistší provést `Reboot`; web se po restartu pokusí automaticky přejít na novou adresu loggeru.
+IP addresses are stored in NVS and can be changed on the `Settings` page. After changing the logger IP, the cleanest path is to use `Reboot`; after restart, the web UI tries to switch automatically to the new logger address.
 
-## Webové Rozhraní
+## Web Interface
 
-Hlavní stránky:
+Main pages:
 
-- `Home` - stav Ethernetu, ATEMu, LTC, SD karty, PGM/PVW, Tally, počet střihů, aktuální soubor a název pořadu,
-- `Soubory na SD kartě` - výpis EDL souborů, filtrování, zobrazení obsahu, stažení, archivace a přesun do koše,
-- `Archiv` - archivované soubory s možností vrácení,
-- `Koš` - vrácení souborů, definitivní smazání a vyprázdnění koše,
-- `Názvy pořadů` - editace až 5 uložených názvů a výběr aktivního pořadu,
-- `Nastavení` - Program/Preview Tally, korekce LTC, IP loggeru a ATEMu, Reboot,
-- `About` - stručný popis projektu.
+- `Home` - Ethernet, ATEM, LTC, SD card, PGM/PVW, Tally, cut count, current file and show name,
+- `Files on SD card` - EDL file list, filters, content preview, download, archive and move to trash,
+- `Archive` - archived files with restore action,
+- `Trash` - restore, permanent delete and empty trash,
+- `Show names` - edit up to 5 stored show names and select the active one,
+- `Settings` - Program/Preview Tally, LTC correction, logger and ATEM IP, Reboot,
+- `About` - short project description.
 
-Na stránce `Home` jsou hodnoty průběžně obnovované přes `/api/state`.
+The `Home` page refreshes live values through `/api/state`.
 
-## SD Karta A Soubory
+## SD Card And Files
 
-EDL soubory se ukládají přímo na SD kartu. Název souboru má tvar:
+EDL files are stored directly on the SD card. The file name format is:
 
 ```text
 DDMMRRNN.edl
 ```
 
-Příklad:
+Example:
 
 ```text
 25042601.edl
 ```
 
-Číslování se nezaplňuje zpětně. Nový soubor dostane číslo o 1 vyšší než nejvyšší existující soubor pro daný den.
+Numbering is not backfilled. A new file always gets a number one higher than the highest existing file for the same day.
 
-Používané adresáře:
+Used directories:
 
-- `/sdcard` - běžné EDL soubory,
-- `/sdcard/archive` - archiv,
-- `/sdcard/trash` - koš.
+- `/sdcard` - regular EDL files,
+- `/sdcard/archive` - archive,
+- `/sdcard/trash` - trash.
 
-Při přesunu do koše nebo při návratu z koše se řeší kolize názvů. Pokud cílový název existuje, použije se číselná přípona `.000` až `.999`. Když není volná žádná varianta, operace se odmítne jako plný koš/cíl pro daný soubor.
+Name collisions are handled when moving files to trash or restoring them. If the target name already exists, a numeric suffix `.000` to `.999` is used. If no free variant is available, the operation is rejected as full for that file name.
 
-## EDL Výstup
+## EDL Output
 
-Výstup je určený například pro DaVinci Resolve.
+The output is intended for tools such as DaVinci Resolve.
 
-Použitý formát:
+Format:
 
 - CMX,
 - NON-DROP FRAME,
-- číslované eventy,
-- název kamery podle ATEM vstupu,
-- `TITLE:` podle aktivního názvu pořadu,
-- source in/out a record in/out podle LTC/TCx2.
+- numbered events,
+- camera name based on the ATEM input,
+- `TITLE:` based on the active show name,
+- source in/out and record in/out based on LTC/TCx2.
 
-Příklad:
+Example:
 
 ```text
 *CREATED: 25.04.2026 09:17:46
-TITLE: Název pořadu
+TITLE: Show name
 FCM: NON-DROP FRAME
 
 000001 CAM7 V C 09:17:46:48 09:19:11:48 09:17:46:48 09:19:11:48
@@ -109,21 +111,21 @@ FCM: NON-DROP FRAME
 *SOURCE FILE: CAM7
 ```
 
-## LTC Korekce
+## LTC Correction
 
-Korekce LTC se nastavuje na stránce `Nastavení`.
+LTC correction is configured on the `Settings` page.
 
-Hodnota se zadává ve framech vstupního LTC 25 fps:
+The value is entered in original 25 fps LTC frames:
 
-- záporná hodnota posune logovaný timecode zpět,
-- kladná hodnota posune logovaný timecode dopředu,
-- povolený rozsah je `-24` až `+24`.
+- negative values move the logged timecode backwards,
+- positive values move the logged timecode forwards,
+- allowed range is `-24` to `+24`.
 
-Protože výstupní TC je TCx2, korekce `-2` na vstupním LTC odpovídá posunu `-4` framy ve výsledném 50p EDL.
+Because the output TC is TCx2, correction `-2` on the input LTC corresponds to `-4` frames in the resulting 50p EDL.
 
 ## OLED
 
-Po startu se na OLED na 5 sekund zobrazí IP obrazovka:
+After startup, the OLED shows the IP screen for 5 seconds:
 
 ```text
 ATEM LOGGER
@@ -132,87 +134,87 @@ Logger 10.0.0.9
 ATEM 10.0.0.10
 ```
 
-Potom se zobrazí hlavní stavová obrazovka s ATEM/LTC stavem, PGM/PVW, TCx2 a počtem střihů.
+Then it switches to the main status screen with ATEM/LTC state, PGM/PVW, TCx2 and cut count.
 
-## Komponenty
+## Components
 
-Projekt je rozdělený do ESP-IDF komponent:
+The project is split into ESP-IDF components:
 
-- `app_state` - sdílený stav aplikace,
-- `app_tasks` - FreeRTOS tasky pro rychlou a pomalou část,
-- `atem_control` - komunikace s ATEM switcherem,
-- `cut_event` - počítání střihů aktuálního souboru,
-- `display` a `ssd1306` - OLED,
-- `edl_writer` - zápis EDL,
-- `logger_events` a `logger_session` - fronta událostí a správa aktuální session,
-- `ltc` a `ltc_input` - LTC dekódování/vstup,
-- `net_config` - NVS konfigurace IP, tally a LTC korekce,
+- `app_state` - shared application state,
+- `app_tasks` - FreeRTOS tasks for fast and slow parts,
+- `atem_control` - ATEM switcher communication,
+- `cut_event` - current file cut counter,
+- `display` and `ssd1306` - OLED,
+- `edl_writer` - EDL writing,
+- `logger_events` and `logger_session` - event queue and current session management,
+- `ltc` and `ltc_input` - LTC decoding/input,
+- `net_config` - NVS configuration for IP, tally and LTC correction,
 - `net_eth` - Ethernet,
-- `rtc` a `ds3231` - reálný čas,
-- `sd_storage` - SD karta,
-- `show_config` - názvy pořadů,
-- `tally_outputs` - PGM/PVW tally výstupy,
-- `web_server` - webové rozhraní,
-- `serial_console`, `new_file_button`, `fake_cut_button` - obslužné vstupy a konzole.
+- `rtc` and `ds3231` - real-time clock,
+- `sd_storage` - SD card,
+- `show_config` - show names,
+- `tally_outputs` - PGM/PVW tally outputs,
+- `web_server` - web interface,
+- `serial_console`, `new_file_button`, `fake_cut_button` - helper inputs and console.
 
-## Rozdělení Úloh
+## Task Split
 
-- Core 1: rychlá část - ATEM, LTC snapshot, tlačítka a vkládání událostí do logger fronty.
-- Core 0: pomalá/obslužná část - logger, SD zápis, web, OLED, RTC, UART a tally výstupy.
+- Core 1: fast path - ATEM, LTC snapshot, buttons and pushing events into the logger queue.
+- Core 0: slower/service path - logger, SD writes, web, OLED, RTC, UART and tally outputs.
 
-Události jdou přes `logger_events` queue, aby rychlá ATEM/LTC část nečekala na pomalý zápis na SD kartu.
+Events go through the `logger_events` queue so the fast ATEM/LTC part does not wait for slower SD card writes.
 
 ## Build
 
-Projekt je vytvořený pro ESP-IDF a ESP32-P4.
+The project is built for ESP-IDF and ESP32-P4.
 
-V prostředí s aktivovaným ESP-IDF lze build spustit například:
+With an active ESP-IDF environment, build with:
 
 ```bash
 idf.py build
 ```
 
-V aktuálním vývojovém prostředí se používá i přímé CMake volání:
+In the current development environment, direct CMake build is also used:
 
 ```bash
 . /home/bob/.espressif/tools/activate_idf_v6.0.1.sh
 IDF_COMPONENT_MANAGER=0 cmake --build build
 ```
 
-Pokud se ve VS Code build začne chovat divně, často pomůže:
+If the VS Code build environment starts behaving unexpectedly, this often helps:
 
-1. otevřít příkazovou paletu,
-2. spustit `ESP-IDF: Select ESP-IDF Version`,
-3. vybrat používanou verzi ESP-IDF,
-4. spustit build znovu.
+1. open the command palette,
+2. run `ESP-IDF: Select ESP-IDF Version`,
+3. select the ESP-IDF version used by the project,
+4. run the build again.
 
 ## Git
 
-Do repozitáře patří:
+Files that belong in the repository:
 
-- zdrojové soubory,
-- komponenty,
+- source files,
+- components,
 - `CMakeLists.txt`,
 - `sdkconfig`,
-- dokumentace,
+- documentation,
 - `README.md`.
 
-Do repozitáře nepatří:
+Files that should not be committed:
 
 - `build/`,
-- binární výstupy,
+- binary outputs,
 - cache,
-- dočasné soubory,
-- lokální nastavení IDE.
+- temporary files,
+- local IDE settings.
 
-## Licence A Zdrojový Kód
+## License And Source Code
 
-K tomuto programu autor neuplatňuje žádná autorská práva. Program je volně použitelný, upravitelný a šiřitelný bez omezení.
+The author does not claim any copyright over this program. The program is free to use, modify and redistribute without restriction.
 
-Zdrojový kód je dostupný na GitHubu:
+Source code is available on GitHub:
 
 <https://github.com/robelto3/ATEM_LOGGER_ESP-IDF>
 
-## Poznámka
+## Note
 
-Na tomto programu se mnou spolupracovali Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI.
+Astra (ChatGPT) and Codík (Codex), my AI assistants from OpenAI, collaborated with me on this program.
