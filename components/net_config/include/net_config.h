@@ -43,9 +43,11 @@ void net_config_ip4_to_string(const net_config_ip4_t *ip, char *out, size_t out_
 esp_err_t net_config_set_server_ip_string(const char *ip_text);
 esp_err_t net_config_set_atem_ip_string(const char *ip_text);
 
-// Nastavení Preview tally výstupů.
-// true  = zelené Preview tally výstupy jsou aktivní
-// false = Preview tally výstupy jsou vypnuté a drží se zhasnuté
+// Nastavení Program/Preview tally výstupů.
+// true  = dané tally výstupy jsou aktivní
+// false = dané tally výstupy jsou vypnuté a drží se zhasnuté
+bool net_config_get_program_tally_enabled(void);
+esp_err_t net_config_set_program_tally_enabled(bool enabled);
 bool net_config_get_preview_tally_enabled(void);
 esp_err_t net_config_set_preview_tally_enabled(bool enabled);
 

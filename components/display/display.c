@@ -13,7 +13,7 @@
 #include "freertos/task.h"
 
 #define DISPLAY_OLED_ADDR 0x3C
-#define DISPLAY_STARTUP_HOLD_MS 3000
+#define DISPLAY_STARTUP_HOLD_MS 5000
 
 static bool s_display_ready = false;
 static TickType_t s_startup_screen_until = 0;
@@ -160,7 +160,7 @@ esp_err_t display_show_startup_screen(const char *server_ip, const char *atem_ip
     char line_server[24];
     char line_atem[24];
 
-    snprintf(line_server, sizeof(line_server), "ESP  %s", server_ip);
+    snprintf(line_server, sizeof(line_server), "Logger %s", server_ip);
     snprintf(line_atem, sizeof(line_atem), "ATEM %s", atem_ip);
 
     esp_err_t ret = ssd1306_clear();

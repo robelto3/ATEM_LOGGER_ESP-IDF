@@ -47,6 +47,8 @@
 static const char *TAG = "WEB";
 static httpd_handle_t s_server = NULL;
 
+static esp_err_t web_get_query_value(httpd_req_t *req, const char *key, char *value, size_t value_len);
+
 // Režim výpisu souborů držíme jen v RAM.
 // Po resetu je výchozí filtr: soubory se střihy + aktuální soubor.
 typedef enum {
@@ -299,11 +301,11 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         "th,td{border-bottom:1px solid #333;padding:8px;text-align:left;}"
         "pre{background:#050505;border:1px solid #333;border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;}"
         ".btn{display:inline-block;background:#2c2c2c;border:1px solid #555;border-radius:8px;padding:8px 12px;margin:4px 8px 4px 0;}"
-        "button.btn{appearance:none;-webkit-appearance:none;cursor:pointer;color:#eee;font-family:inherit;font-size:14px;line-height:normal;}button.btn:disabled{opacity:.45;cursor:not-allowed;}"
+        "button.btn{appearance:none;-webkit-appearance:none;cursor:pointer;color:#eee;font-family:inherit;font-size:14px;line-height:normal;}button.btn:disabled{opacity:.45;cursor:not-allowed;}button.btn.link-like{color:#7cc7ff;}"
         "button.btn.settings-btn,a.btn.settings-btn{height:39px;padding:0 12px;line-height:37px;}"
         "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:16px;line-height:normal;}"
         ".btn-active{background:#3a101a;border-color:crimson;color:#fff;font-weight:bold;}.btn-active:hover{background:#4a1420;text-decoration:none;}.del{color:#ff7777;}.danger{background:#3a1b1b;border-color:#884444;color:#ffb0b0;}"
-        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0 0 0 8px;}input.settings-field,button.btn.settings-field,a.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button,.settings-card a.btn{font-size:16px;}.settings-card small{font-size:15px;}"
+        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0;}input.settings-field,button.btn.settings-field,a.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-check-row{display:flex;align-items:center;gap:8px;}.settings-check-text{display:inline-block;width:128px;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button,.settings-card a.btn{font-size:16px;}.settings-card small{font-size:15px;}"
         ".show-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px 0;}"
         ".show-label{display:inline-block;min-width:120px;margin:0;}"
         ".show-name{min-width:260px;width:360px;max-width:100%;margin:0;}"
@@ -1293,27 +1295,25 @@ static void web_send_status_card(httpd_req_t *req)
     );
     web_send_chunk(req, line);
 
-    snprintf(
-        line,
-        sizeof(line),
-        "<p>PGM: <b id='home-pgm'>%u</b></p>",
-        state.program_input
-    );
-    web_send_chunk(req, line);
-
-    snprintf(
-        line,
-        sizeof(line),
-        "<p>PVW: <b id='home-pvw'>%u</b></p>",
-        state.preview_input
-    );
-    web_send_chunk(req, line);
-
+    bool program_tally_enabled = net_config_get_program_tally_enabled();
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
     snprintf(
         line,
         sizeof(line),
-        "<p>PVW Tally: <a id='home-pvw-tally' class='%s' href='/save_preview_tally?%sback=home' title='%s'><b>%s</b></a></p>",
+        "<p>PGM: <b id='home-pgm'>%u</b> &nbsp; Tally: <a id='home-pgm-tally' class='%s' href='/save_program_tally?%sback=home' title='%s'><b>%s</b></a></p>",
+        state.program_input,
+        program_tally_enabled ? "ok" : "bad",
+        program_tally_enabled ? "" : "enabled=1&amp;",
+        program_tally_enabled ? "Vypnout" : "Zapnout",
+        program_tally_enabled ? "ON" : "OFF"
+    );
+    web_send_chunk(req, line);
+
+    snprintf(
+        line,
+        sizeof(line),
+        "<p>PVW: <b id='home-pvw'>%u</b> &nbsp; Tally: <a id='home-pvw-tally' class='%s' href='/save_preview_tally?%sback=home' title='%s'><b>%s</b></a></p>",
+        state.preview_input,
         preview_tally_enabled ? "ok" : "bad",
         preview_tally_enabled ? "" : "enabled=1&amp;",
         preview_tally_enabled ? "Vypnout" : "Zapnout",
@@ -1335,13 +1335,13 @@ static void web_send_status_card(httpd_req_t *req)
     char active_show[SHOW_CONFIG_NAME_MAX_LEN] = {0};
     show_config_get_active_name(active_show, sizeof(active_show));
 
-    web_send_chunk(req, "<p>Název pořadu: <a class='active-show' href='/shows' title='Změnit'>");
-    web_send_html_escaped(req, active_show);
-    web_send_chunk(req, "</a></p>");
-
     web_send_chunk(req, "<p>Název souboru: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
     web_send_html_escaped(req, state.current_filename);
     web_send_chunk(req, "</a></b></p>");
+
+    web_send_chunk(req, "<p>Název pořadu: <a class='active-show' href='/shows' title='Změnit název pořadu'>");
+    web_send_html_escaped(req, active_show);
+    web_send_chunk(req, "</a></p>");
 
     web_send_chunk(req, "</div>");
 }
@@ -1359,16 +1359,18 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
 
     web_send_chunk(req, "{");
 
+    bool program_tally_enabled = net_config_get_program_tally_enabled();
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
 
     snprintf(
         line,
         sizeof(line),
-        "\"atem\":%s,\"ltc\":%s,\"pgm\":%u,\"pvw\":%u,\"pvw_tally\":%s,",
+        "\"atem\":%s,\"ltc\":%s,\"pgm\":%u,\"pvw\":%u,\"pgm_tally\":%s,\"pvw_tally\":%s,",
         state.atem_connected ? "true" : "false",
         state.ltc_valid ? "true" : "false",
         state.program_input,
         state.preview_input,
+        program_tally_enabled ? "true" : "false",
         preview_tally_enabled ? "true" : "false"
     );
     web_send_chunk(req, line);
@@ -1425,10 +1427,10 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "<p><a class='btn' href='/'>Home</a></p>");
 
     web_send_chunk(req, "<div class='card'>");
-    web_send_chunk(req, "<h2>ATEM_LOGER_ESP-IDF</h2>");
+    web_send_chunk(req, "<h2>ATEM_LOGGER_ESP-IDF</h2>");
     web_send_chunk(req, "<p><b>ESP32-P4 ATEM logger</b> je zařízení pro záznam střihů z ATEM switcheru do EDL souborů na SD kartu.</p>");
     web_send_chunk(req, "<p>Projekt běží na desce ESP32-P4-ETH v prostředí ESP-IDF a je stavěný modulárně po komponentách.</p>");
-    web_send_chunk(req, "<p><span class='about-badge'>ATEM</span><span class='about-badge'>LTC 25 fps</span><span class='about-badge'>TCx2</span><span class='about-badge'>CMX EDL</span><span class='about-badge'>OLED</span><span class='about-badge'>Web</span><span class='about-badge'>Tally</span></p>");
+    web_send_chunk(req, "<p><span class='about-badge'>ATEM</span><span class='about-badge'>LTC 25 fps</span><span class='about-badge'>TCx2</span><span class='about-badge'>CMX EDL</span><span class='about-badge'>OLED</span><span class='about-badge'>Web</span><span class='about-badge'>Archiv</span><span class='about-badge'>Koš</span><span class='about-badge'>Tally</span></p>");
     web_send_chunk(req, "</div>");
 
     web_send_chunk(req, "<div class='card'>");
@@ -1436,13 +1438,15 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "<ul class='about-list'>");
     web_send_chunk(req, "<li>čtení ATEM Program / Preview přes UDP parser <b>PrgI</b> a <b>PrvI</b></li>");
     web_send_chunk(req, "<li>zápis změn Program busu do EDL souboru ve formátu <b>CMX / NON-DROP FRAME</b></li>");
-    web_send_chunk(req, "<li>LTC vstup 25 fps na GPIO4 a převod na <b>TCx2</b> pro EDL i OLED</li>");
+    web_send_chunk(req, "<li>LTC vstup 25 fps s nastavitelnou korekcí a převod na <b>TCx2</b> pro EDL i OLED</li>");
     web_send_chunk(req, "<li>vytváření EDL souborů na SD kartě s názvem <b>DDMMRRNN.edl</b></li>");
     web_send_chunk(req, "<li>uložené názvy pořadů a automatický <b>TITLE: Název pořadu</b></li>");
-    web_send_chunk(req, "<li>webové zobrazení, stažení a mazání EDL souborů</li>");
+    web_send_chunk(req, "<li>webové zobrazení, stažení, archivace a přesun EDL souborů do koše</li>");
+    web_send_chunk(req, "<li>samostatné stránky pro Archiv a Koš s obnovou souborů a definitivním mazáním v koši</li>");
     web_send_chunk(req, "<li>RTC synchronizace z času prohlížeče</li>");
-    web_send_chunk(req, "<li>OLED stav: ATEM, LTC, PGM, PVW, TCx2 a aktuální soubor</li>");
-    web_send_chunk(req, "<li>Program / Preview tally výstupy s editovatelným pinoutem</li>");
+    web_send_chunk(req, "<li>OLED úvodní IP obrazovka a stav: ATEM, LTC, PGM, PVW, TCx2 a počet střihů</li>");
+    web_send_chunk(req, "<li>samostatně vypínatelné Program / Preview tally výstupy</li>");
+    web_send_chunk(req, "<li>nastavení IP loggeru a ATEM switcheru s pohodlným rebootem a přechodem na novou IP</li>");
     web_send_chunk(req, "<li>fake cut test přes GPIO46 bez nutnosti připojeného ATEMu</li>");
     web_send_chunk(req, "<li>rozdělení úloh mezi dvě jádra ESP32-P4 přes FreeRTOS tasky</li>");
     web_send_chunk(req, "</ul>");
@@ -1456,15 +1460,9 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "</div>");
 
     web_send_chunk(req, "<div class='card'>");
-    web_send_chunk(req, "<h2>Důležité piny</h2>");
-    web_send_chunk(req, "<p>LTC: <b>GPIO4</b> &nbsp; New EDL: <b>GPIO5</b> &nbsp; Fake cut: <b>GPIO46</b></p>");
-    web_send_chunk(req, "<p>I2C OLED/RTC: SDA <b>GPIO7</b>, SCL <b>GPIO8</b></p>");
-    web_send_chunk(req, "<p>PGM tally 1–8: <b>6, 14, 15, 16, 17, 18, 19, 54</b></p>");
-    web_send_chunk(req, "<p>PVW tally 1–8: <b>33, 32, 27, 26, 23, 22, 21, 20</b></p>");
-    web_send_chunk(req, "</div>");
-
-    web_send_chunk(req, "<div class='card'>");
-    web_send_chunk(req, "<p>Tento program napsala Astra, moje AI asistentka.</p>");
+    web_send_chunk(req, "<p>Na tomto programu se mnou spolupracovali Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI.</p>");
+    web_send_chunk(req, "<p>K tomuto programu neuplatňuji žádná autorská práva. Je volně použitelný, upravitelný a šiřitelný bez omezení.</p>");
+    web_send_chunk(req, "<p>Zdrojový kód je dostupný na GitHubu: <a href='https://github.com/robelto3/ATEM_LOGGER_ESP-IDF'>robelto3/ATEM_LOGGER_ESP-IDF</a></p>");
     web_send_chunk(req, "</div>");
 
     web_send_chunk(req, "<p><a class='btn' href='/'>Home</a></p>");
@@ -1519,9 +1517,24 @@ static esp_err_t web_new_file_handler(httpd_req_t *req)
 
 static esp_err_t web_home_handler(httpd_req_t *req)
 {
+    char reboot_to_ip[NET_CONFIG_IP_STR_LEN] = {0};
+    bool reboot_redirect = false;
+
+    if (web_get_query_value(req, "reboot_to", reboot_to_ip, sizeof(reboot_to_ip)) == ESP_OK) {
+        net_config_ip4_t parsed = {0};
+        reboot_redirect = net_config_parse_ip4(reboot_to_ip, &parsed);
+    }
+
     web_send_html_header(req, "ATEM Logger");
     web_send_chunk(req, "<h1><a class='home-title' href='/' title='Refresh'>ATEM Logger</a></h1>");
     web_send_status_card(req);
+
+    if (reboot_redirect) {
+        web_send_chunk(req, "<script>setTimeout(function(){window.location.href='http://");
+        web_send_html_escaped(req, reboot_to_ip);
+        web_send_chunk(req, "/';},3500);</script>");
+    }
+
     web_send_chunk(req,
         "<script>"
         "function pad2(n){return String(n).padStart(2,'0');}"
@@ -1544,7 +1557,7 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "function setText(id,text){var e=document.getElementById(id);if(e){e.textContent=text;}}"
         "function setOkBad(id,ok){var e=document.getElementById(id);if(e){e.textContent=ok?'OK':'---';e.className=ok?'ok':'bad';}}"
         "function setOnOff(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';}}"
-        "function setPreviewTally(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';e.href=on?'/save_preview_tally?back=home':'/save_preview_tally?enabled=1&back=home';e.title=on?'Vypnout':'Zapnout';}}"
+        "function setTally(id,on,url){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';e.href=on?url+'?back=home':url+'?enabled=1&back=home';e.title=on?'Vypnout':'Zapnout';}}"
         "function formatNumberSpaces(n){return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g,' ');}"
         "function updateHomeState(){"
         "fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){"
@@ -1553,7 +1566,8 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "setText('home-pgm',s.pgm);"
         "setText('home-pvw',s.pvw);"
         "setText('home-tc',s.tc);"
-        "setPreviewTally('home-pvw-tally',!!s.pvw_tally);"
+        "setTally('home-pgm-tally',!!s.pgm_tally,'/save_program_tally');"
+        "setTally('home-pvw-tally',!!s.pvw_tally,'/save_preview_tally');"
         "setText('home-cut-count',formatNumberSpaces(s.cuts));"
         "setText('home-file',s.file);"
         "var rtcLink=document.getElementById('home-rtc-link');"
@@ -1640,6 +1654,7 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     net_config_get_server_ip_string(server_ip, sizeof(server_ip));
     net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
     net_config_get_netmask_string(netmask, sizeof(netmask));
+    bool program_tally_enabled = net_config_get_program_tally_enabled();
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
     int ltc_correction = net_config_get_ltc_frame_correction();
     snprintf(ltc_correction_text, sizeof(ltc_correction_text), "%d", ltc_correction);
@@ -1649,8 +1664,16 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     web_send_chunk(req, "<p><a class='btn' href='/'>Home</a></p>");
 
     web_send_chunk(req, "<div class='card settings-card'>");
+    web_send_chunk(req, "<form action='/save_program_tally' method='get'>");
+    web_send_chunk(req, "<label class='settings-check-row'><span class='settings-check-text'>Program Tally:</span><input class='setting-check' type='checkbox' name='enabled' value='1' onchange='this.form.submit()'");
+    if (program_tally_enabled) {
+        web_send_chunk(req, " checked");
+    }
+    web_send_chunk(req, "></label><small class='settings-note'>Zaškrtnuto = červené Program tally výstupy jsou aktivní. Odškrtnuto = PGM výstupy jsou zhasnuté. Změna se uloží hned.</small>");
+    web_send_chunk(req, "</form>");
+
     web_send_chunk(req, "<form action='/save_preview_tally' method='get'>");
-    web_send_chunk(req, "<label>Preview Tally: <input class='setting-check' type='checkbox' name='enabled' value='1' onchange='this.form.submit()'");
+    web_send_chunk(req, "<label class='settings-check-row'><span class='settings-check-text'>Preview Tally:</span><input class='setting-check' type='checkbox' name='enabled' value='1' onchange='this.form.submit()'");
     if (preview_tally_enabled) {
         web_send_chunk(req, " checked");
     }
@@ -1673,7 +1696,9 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     web_send_chunk(req, "<form class='settings-section-spaced' action='/save_network' method='get'>");
     web_send_ip_input(req, "IP loggeru/web serveru", "server_ip", server_ip);
     web_send_ip_input(req, "IP ATEM switcheru", "atem_ip", atem_ip);
-    web_send_chunk(req, "<p class='settings-ip-save'><button class='btn settings-btn settings-field' type='submit'>Uložit nastavení IP</button> <a class='btn settings-btn settings-field' href='/reboot' onclick=\"return confirm('Opravdu restartovat logger?')\">Reboot</a></p>");
+    web_send_chunk(req, "<p class='settings-ip-save'><button class='btn settings-btn settings-field' type='submit'>Uložit nastavení IP</button> <a class='btn settings-btn settings-field' href='/reboot?target=");
+    web_send_html_escaped(req, server_ip);
+    web_send_chunk(req, "' onclick=\"return confirm('Opravdu restartovat logger?')\">Reboot</a></p>");
     web_send_chunk(req, "</form>");
     web_send_chunk(req, "<p><small>Maska je pevně ");
     web_send_html_escaped(req, netmask);
@@ -1682,6 +1707,31 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     web_send_chunk(req, "</div>");
 
     web_send_html_footer(req);
+    return ESP_OK;
+}
+
+static esp_err_t web_save_program_tally_handler(httpd_req_t *req)
+{
+    char enabled_value[8] = {0};
+    char back_value[8] = {0};
+    bool enabled = (web_get_query_value(req, "enabled", enabled_value, sizeof(enabled_value)) == ESP_OK);
+    bool back_home = (web_get_query_value(req, "back", back_value, sizeof(back_value)) == ESP_OK &&
+                      strcmp(back_value, "home") == 0);
+
+    esp_err_t ret = net_config_set_program_tally_enabled(enabled);
+    if (ret != ESP_OK) {
+        web_send_html_header(req, "ATEM Logger - nastavení");
+        web_send_chunk(req, "<h1>Nastavení</h1>");
+        web_send_chunk(req, "<div class='card'><p><span class='bad'>Program Tally nastavení nešlo uložit.</span></p>");
+        web_send_chunk(req, "<p><a class='btn' href='/network'>Zpět na nastavení</a></p></div>");
+        web_send_html_footer(req);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", back_home ? "/" : "/network");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, back_home ? "Redirecting to Home" : "Redirecting to settings");
     return ESP_OK;
 }
 
@@ -1807,7 +1857,9 @@ static esp_err_t web_save_network_handler(httpd_req_t *req)
         web_send_chunk(req, "<p><span class='bad'>ATEM IP nebyla platná nebo nešla uložit.</span></p>");
     }
 
-    web_send_chunk(req, "<p><a class='btn danger' href='/reboot'>Restartovat logger</a> ");
+    web_send_chunk(req, "<p><a class='btn danger' href='/reboot?target=");
+    web_send_html_escaped(req, saved_server_ip);
+    web_send_chunk(req, "'>Restartovat logger</a> ");
     web_send_chunk(req, "<a class='btn' href='/network'>Zpět na nastavení</a> ");
     web_send_chunk(req, "<a class='btn' href='/'>Home</a></p>");
     web_send_chunk(req, "<p><small>Nová IP ESP/web serveru se projeví až po restartu. Po restartu otevři web na nové adrese.</small></p>");
@@ -1945,7 +1997,7 @@ static void web_send_show_settings_form(httpd_req_t *req)
         web_send_chunk(req, "</div>");
     }
 
-    web_send_chunk(req, "<p><button class='btn' type='submit'>Uložit názvy pořadů</button> <a class='btn' href='/'>Home</a></p>");
+    web_send_chunk(req, "<p><button class='btn link-like' type='submit'>Uložit a použít vybraný</button></p>");
     web_send_chunk(req, "</form>");
     web_send_chunk(req, "<p><small>Slot 1 nesmí být prázdný; při prázdné hodnotě se použije ATEM LOGGER. Při změně aktivního pořadu se automaticky založí nový EDL soubor.</small></p>");
     web_send_chunk(req, "</div>");
@@ -2135,20 +2187,36 @@ static esp_err_t web_rtc_sync_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void web_reboot_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(900));
+    esp_restart();
+}
+
 static esp_err_t web_reboot_handler(httpd_req_t *req)
 {
-    char server_ip[NET_CONFIG_IP_STR_LEN] = {0};
-    net_config_get_server_ip_string(server_ip, sizeof(server_ip));
+    char target_ip[NET_CONFIG_IP_STR_LEN] = {0};
+    char location[64] = "/";
 
-    web_send_html_header(req, "ATEM Logger - restart");
-    web_send_chunk(req, "<h1>Restart loggeru</h1>");
-    web_send_chunk(req, "<div class='card'><p>Logger se restartuje.</p><p>Po chvíli otevři web na adrese: <b>http://");
-    web_send_html_escaped(req, server_ip);
-    web_send_chunk(req, "/</b></p></div>");
-    web_send_html_footer(req);
+    if (web_get_query_value(req, "target", target_ip, sizeof(target_ip)) == ESP_OK) {
+        net_config_ip4_t parsed = {0};
+        if (net_config_parse_ip4(target_ip, &parsed)) {
+            snprintf(location, sizeof(location), "/?reboot_to=%s", target_ip);
+        }
+    }
 
-    vTaskDelay(pdMS_TO_TICKS(300));
-    esp_restart();
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Redirecting to Home");
+
+    if (xTaskCreate(web_reboot_task, "web_reboot", 2048, NULL, 5, NULL) != pdPASS) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+    }
+
     return ESP_OK;
 }
 
@@ -3194,7 +3262,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 21;
+    config.max_uri_handlers = 22;
     config.stack_size = WEB_SERVER_TASK_STACK;
     config.core_id = WEB_SERVER_TASK_CORE;
     config.lru_purge_enable = true;
@@ -3245,6 +3313,13 @@ esp_err_t web_server_start(void)
         .uri = "/save_network",
         .method = HTTP_GET,
         .handler = web_save_network_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t save_program_tally_uri = {
+        .uri = "/save_program_tally",
+        .method = HTTP_GET,
+        .handler = web_save_program_tally_handler,
         .user_ctx = NULL,
     };
 
@@ -3359,6 +3434,7 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &api_state_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_network_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_program_tally_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_preview_tally_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_ltc_correction_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &shows_uri));

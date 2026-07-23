@@ -12,6 +12,7 @@
 #define NET_CONFIG_NVS_NAMESPACE "netcfg"
 #define NET_CONFIG_NVS_KEY_SERVER_IP "server_ip"
 #define NET_CONFIG_NVS_KEY_ATEM_IP   "atem_ip"
+#define NET_CONFIG_NVS_KEY_PROGRAM_TALLY "program_tally"
 #define NET_CONFIG_NVS_KEY_PREVIEW_TALLY "preview_tally"
 #define NET_CONFIG_NVS_KEY_LTC_CORRECTION "ltc_corr"
 
@@ -20,6 +21,7 @@ static const char *TAG = "NET_CONFIG";
 static portMUX_TYPE s_config_mux = portMUX_INITIALIZER_UNLOCKED;
 static net_config_ip4_t s_server_ip = {10, 0, 0, 9};
 static net_config_ip4_t s_atem_ip = {10, 0, 0, 10};
+static bool s_program_tally_enabled = true;
 static bool s_preview_tally_enabled = true;
 static int s_ltc_frame_correction = 0;
 static bool s_initialized = false;
@@ -206,10 +208,12 @@ esp_err_t net_config_init(void)
 
     net_config_ip4_t loaded_server_ip = {0};
     net_config_ip4_t loaded_atem_ip = {0};
+    bool loaded_program_tally_enabled = true;
     bool loaded_preview_tally_enabled = true;
     int loaded_ltc_frame_correction = 0;
     bool loaded_server_ok = false;
     bool loaded_atem_ok = false;
+    bool loaded_program_tally_ok = false;
     bool loaded_preview_tally_ok = false;
     bool loaded_ltc_correction_ok = false;
 
@@ -218,6 +222,7 @@ esp_err_t net_config_init(void)
     if (ret == ESP_OK) {
         loaded_server_ok = net_config_read_ip_from_nvs(handle, NET_CONFIG_NVS_KEY_SERVER_IP, &loaded_server_ip);
         loaded_atem_ok = net_config_read_ip_from_nvs(handle, NET_CONFIG_NVS_KEY_ATEM_IP, &loaded_atem_ip);
+        loaded_program_tally_ok = net_config_read_bool_from_nvs(handle, NET_CONFIG_NVS_KEY_PROGRAM_TALLY, &loaded_program_tally_enabled);
         loaded_preview_tally_ok = net_config_read_bool_from_nvs(handle, NET_CONFIG_NVS_KEY_PREVIEW_TALLY, &loaded_preview_tally_enabled);
         loaded_ltc_correction_ok = net_config_read_int_from_nvs(
             handle,
@@ -244,6 +249,7 @@ esp_err_t net_config_init(void)
         net_config_set_default_atem_ip_locked();
     }
 
+    s_program_tally_enabled = loaded_program_tally_ok ? loaded_program_tally_enabled : true;
     s_preview_tally_enabled = loaded_preview_tally_ok ? loaded_preview_tally_enabled : true;
     s_ltc_frame_correction = loaded_ltc_correction_ok ? loaded_ltc_frame_correction : 0;
 
@@ -257,6 +263,7 @@ esp_err_t net_config_init(void)
 
     ESP_LOGI(TAG, "Server IP: %s%s", server_ip_str, loaded_server_ok ? " (NVS)" : " (default)");
     ESP_LOGI(TAG, "ATEM IP:   %s%s", atem_ip_str, loaded_atem_ok ? " (NVS)" : " (default)");
+    ESP_LOGI(TAG, "Program tally: %s%s", s_program_tally_enabled ? "ON" : "OFF", loaded_program_tally_ok ? " (NVS)" : " (default)");
     ESP_LOGI(TAG, "Preview tally: %s%s", s_preview_tally_enabled ? "ON" : "OFF", loaded_preview_tally_ok ? " (NVS)" : " (default)");
     ESP_LOGI(TAG, "LTC correction: %+d frame(s)%s", s_ltc_frame_correction, loaded_ltc_correction_ok ? " (NVS)" : " (default)");
 
@@ -363,6 +370,51 @@ esp_err_t net_config_set_atem_ip_string(const char *ip_text)
     return net_config_set_ip_string(NET_CONFIG_NVS_KEY_ATEM_IP, ip_text, &s_atem_ip);
 }
 
+
+bool net_config_get_program_tally_enabled(void)
+{
+    bool enabled = true;
+
+    portENTER_CRITICAL(&s_config_mux);
+    enabled = s_program_tally_enabled;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    return enabled;
+}
+
+esp_err_t net_config_set_program_tally_enabled(bool enabled)
+{
+    portENTER_CRITICAL(&s_config_mux);
+    bool old_enabled = s_program_tally_enabled;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    if (old_enabled == enabled) {
+        return ESP_OK;
+    }
+
+    nvs_handle_t handle = 0;
+    esp_err_t ret = nvs_open(NET_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_set_u8(handle, NET_CONFIG_NVS_KEY_PROGRAM_TALLY, enabled ? 1U : 0U);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    portENTER_CRITICAL(&s_config_mux);
+    s_program_tally_enabled = enabled;
+    portEXIT_CRITICAL(&s_config_mux);
+
+    ESP_LOGI(TAG, "Program tally saved: %s", enabled ? "ON" : "OFF");
+    return ESP_OK;
+}
 
 bool net_config_get_preview_tally_enabled(void)
 {

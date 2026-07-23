@@ -36,12 +36,16 @@ static void tally_outputs_set_pin(gpio_num_t gpio, bool active)
     gpio_set_level(gpio, active ? TALLY_OUTPUT_ACTIVE_LEVEL : TALLY_OUTPUT_INACTIVE_LEVEL);
 }
 
-static void tally_outputs_apply(uint8_t program_input, uint8_t preview_input, bool preview_tally_enabled)
+static void tally_outputs_apply(uint8_t program_input, uint8_t preview_input, bool program_tally_enabled, bool preview_tally_enabled)
 {
     for (uint8_t i = 0; i < TALLY_OUTPUT_INPUT_COUNT; i++) {
         uint8_t input_number = (uint8_t)(i + 1);
 
-        tally_outputs_set_pin(s_program_pins[i], program_input == input_number);
+        if (program_tally_enabled) {
+            tally_outputs_set_pin(s_program_pins[i], program_input == input_number);
+        } else {
+            tally_outputs_set_pin(s_program_pins[i], false);
+        }
 
         if (preview_tally_enabled) {
             tally_outputs_set_pin(s_preview_pins[i], preview_input == input_number);
@@ -96,9 +100,10 @@ void tally_outputs_update(void)
     // Testovací/domácí režim:
     // když je TALLY_OUTPUT_SHOW_WITHOUT_ATEM = 1, výstupy sledují app_state
     // i bez ATEM spojení. Díky tomu funguje test tally přes fake cut GPIO46.
-    // Preview tally lze vypnout přes webové Nastavení; Program tally zůstává aktivní.
+    // Program i Preview tally lze vypnout z webu.
+    bool program_tally_enabled = net_config_get_program_tally_enabled();
     bool preview_tally_enabled = net_config_get_preview_tally_enabled();
-    tally_outputs_apply(state.program_input, state.preview_input, preview_tally_enabled);
+    tally_outputs_apply(state.program_input, state.preview_input, program_tally_enabled, preview_tally_enabled);
 }
 
 void tally_outputs_all_off(void)
