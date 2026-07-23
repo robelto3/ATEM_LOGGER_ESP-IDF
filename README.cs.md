@@ -38,6 +38,10 @@ Projekt je stavěný pro:
 
 OLED není kritický pro start zařízení. Pokud displej chybí nebo neodpovídá, logger, Ethernet, web i SD část běží dál.
 
+## Hardwarová Dokumentace
+
+- [Schéma zapojení PDF](docs/hardware/schematic-atem-logger-esp32.pdf)
+
 ## Orientační Piny Hardwaru
 
 Toto je základní orientační seznam, než bude doplněné kompletní schéma a dokumentace DPS.

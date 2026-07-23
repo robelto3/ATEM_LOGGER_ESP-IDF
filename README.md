@@ -38,6 +38,10 @@ The project is built for:
 
 The OLED display is not required for startup. If the display is missing or does not respond, the logger, Ethernet, web server and SD card parts continue running.
 
+## Hardware Documentation
+
+- [Schematic PDF](docs/hardware/schematic-atem-logger-esp32.pdf)
+
 ## Hardware Pin Orientation
 
 This is a basic orientation list until a full schematic/PCB documentation is added.
