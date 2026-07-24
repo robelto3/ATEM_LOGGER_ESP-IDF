@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -20,6 +21,7 @@ esp_err_t sd_storage_init(void);
 void sd_storage_deinit(void);
 
 bool sd_storage_is_mounted(void);
+esp_err_t sd_storage_get_space(uint64_t *total_bytes, uint64_t *free_bytes);
 
 esp_err_t sd_storage_write_test_file(void);
 esp_err_t sd_storage_read_test_file(void);

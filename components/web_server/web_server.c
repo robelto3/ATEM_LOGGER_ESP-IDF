@@ -235,6 +235,36 @@ static void web_format_uint_spaces(uint32_t value, char *out, size_t out_size)
     snprintf(out, out_size, "%s", formatted);
 }
 
+static void web_format_storage_size(uint64_t bytes, char *out, size_t out_size)
+{
+    uint64_t unit_bytes = 1;
+    const char *unit = "B";
+
+    if (!out || out_size == 0U) {
+        return;
+    }
+
+    if (bytes >= 1000000000ULL) {
+        unit_bytes = 1000000000ULL;
+        unit = "GB";
+    } else if (bytes >= 1000000ULL) {
+        unit_bytes = 1000000ULL;
+        unit = "MB";
+    } else if (bytes >= 1000ULL) {
+        unit_bytes = 1000ULL;
+        unit = "kB";
+    }
+
+    if (unit_bytes == 1U) {
+        snprintf(out, out_size, "%llu %s", (unsigned long long)bytes, unit);
+        return;
+    }
+
+    uint64_t whole = bytes / unit_bytes;
+    uint64_t fraction = ((bytes % unit_bytes) * 10ULL) / unit_bytes;
+    snprintf(out, out_size, "%llu.%llu %s", (unsigned long long)whole, (unsigned long long)fraction, unit);
+}
+
 static void web_send_html_header(httpd_req_t *req, const char *title)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -265,6 +295,8 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         ".home-head .rtc-link:hover{text-decoration:underline;}"
         ".home-head .rtc-link:hover .rtc-time{text-decoration:underline;}"
         ".home-top .btn:last-child{margin-right:0;}"
+        ".home-pgm-label{color:#ff8a8a;font-weight:bold;}"
+        ".home-pvw-label{color:#81f781;font-weight:bold;}"
         ".settings-note{display:block;margin-top:2px;margin-bottom:12px;}"
         ".settings-note-ltc{margin-bottom:20px;}"
         ".settings-ip-save{margin-top:0;}"
@@ -1203,7 +1235,7 @@ static void web_send_status_card(httpd_req_t *req)
     net_eth_status_t eth;
     net_eth_get_status(&eth);
 
-    char line[192];
+    char line[256];
 
     web_send_chunk(req, "<div class='card home-card'>");
     web_send_chunk(req, "<div class='home-top'>");
@@ -1286,13 +1318,28 @@ static void web_send_status_card(httpd_req_t *req)
     );
     web_send_chunk(req, line);
 
-    snprintf(
-        line,
-        sizeof(line),
-        "<p>SD karta: <span class='%s'>%s</span></p>",
-        sd_storage_is_mounted() ? "ok" : "bad",
-        sd_storage_is_mounted() ? "OK" : "---"
-    );
+    uint64_t sd_total_bytes = 0;
+    uint64_t sd_free_bytes = 0;
+    bool sd_mounted = sd_storage_is_mounted();
+    bool sd_space_ok = sd_mounted && sd_storage_get_space(&sd_total_bytes, &sd_free_bytes) == ESP_OK;
+    if (sd_space_ok) {
+        char sd_free_text[24];
+        web_format_storage_size(sd_free_bytes, sd_free_text, sizeof(sd_free_text));
+        snprintf(
+            line,
+            sizeof(line),
+            "<p>SD karta: <span class='ok'>OK</span> &nbsp; Free: <b>%s</b></p>",
+            sd_free_text
+        );
+    } else {
+        snprintf(
+            line,
+            sizeof(line),
+            "<p>SD karta: <span class='%s'>%s</span></p>",
+            sd_mounted ? "ok" : "bad",
+            sd_mounted ? "OK" : "---"
+        );
+    }
     web_send_chunk(req, line);
 
     bool program_tally_enabled = net_config_get_program_tally_enabled();
@@ -1300,7 +1347,7 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>PGM: <b id='home-pgm'>%u</b> &nbsp; Tally: <a id='home-pgm-tally' class='%s' href='/save_program_tally?%sback=home' title='%s'><b>%s</b></a></p>",
+        "<p><span class='home-pgm-label'>PGM:</span> <b id='home-pgm'>%u</b> &nbsp; Tally: <a id='home-pgm-tally' class='%s' href='/save_program_tally?%sback=home' title='%s'><b>%s</b></a></p>",
         state.program_input,
         program_tally_enabled ? "ok" : "bad",
         program_tally_enabled ? "" : "enabled=1&amp;",
@@ -1312,7 +1359,7 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>PVW: <b id='home-pvw'>%u</b> &nbsp; Tally: <a id='home-pvw-tally' class='%s' href='/save_preview_tally?%sback=home' title='%s'><b>%s</b></a></p>",
+        "<p><span class='home-pvw-label'>PVW:</span> <b id='home-pvw'>%u</b> &nbsp; Tally: <a id='home-pvw-tally' class='%s' href='/save_preview_tally?%sback=home' title='%s'><b>%s</b></a></p>",
         state.preview_input,
         preview_tally_enabled ? "ok" : "bad",
         preview_tally_enabled ? "" : "enabled=1&amp;",
@@ -1335,13 +1382,13 @@ static void web_send_status_card(httpd_req_t *req)
     char active_show[SHOW_CONFIG_NAME_MAX_LEN] = {0};
     show_config_get_active_name(active_show, sizeof(active_show));
 
-    web_send_chunk(req, "<p>Název souboru: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
-    web_send_html_escaped(req, state.current_filename);
-    web_send_chunk(req, "</a></b></p>");
-
-    web_send_chunk(req, "<p>Název pořadu: <a class='active-show' href='/shows' title='Změnit název pořadu'>");
+    web_send_chunk(req, "<p>Pořad: <a class='active-show' href='/shows' title='Změnit název pořadu'>");
     web_send_html_escaped(req, active_show);
     web_send_chunk(req, "</a></p>");
+
+    web_send_chunk(req, "<p>Soubor: <b><a id='home-file' class='current-file' href='/new_file' title='Uzavřít a vytvořit nový' onclick=\"return confirm('Opravdu uzavřít aktuální EDL soubor a vytvořit nový?');\">");
+    web_send_html_escaped(req, state.current_filename);
+    web_send_chunk(req, "</a></b></p>");
 
     web_send_chunk(req, "</div>");
 }

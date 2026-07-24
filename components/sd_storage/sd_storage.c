@@ -235,6 +235,15 @@ bool sd_storage_is_mounted(void)
     return s_mounted;
 }
 
+esp_err_t sd_storage_get_space(uint64_t *total_bytes, uint64_t *free_bytes)
+{
+    if (!s_mounted) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return esp_vfs_fat_info(SD_STORAGE_MOUNT_POINT, total_bytes, free_bytes);
+}
+
 esp_err_t sd_storage_write_test_file(void)
 {
     if (!s_mounted) {
