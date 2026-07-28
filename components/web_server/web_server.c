@@ -337,7 +337,7 @@ static void web_send_html_header(httpd_req_t *req, const char *title)
         "button.btn.settings-btn,a.btn.settings-btn{height:39px;padding:0 12px;line-height:37px;}"
         "button.btn.rtc-sync-btn{color:#7cc7ff;font-weight:bold;font-size:16px;font-family:inherit;line-height:normal;}.home-card{font-size:18px;line-height:1.35;}.home-card h2{font-size:26px;}.home-card .btn{font-size:16px;line-height:normal;}"
         ".btn-active{background:#3a101a;border-color:crimson;color:#fff;font-weight:bold;}.btn-active:hover{background:#4a1420;text-decoration:none;}.del{color:#ff7777;}.danger{background:#3a1b1b;border-color:#884444;color:#ffb0b0;}"
-        ".muted{color:#aaa;}input{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0;}input.settings-field,button.btn.settings-field,a.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-check-row{display:flex;align-items:center;gap:8px;}.settings-check-text{display:inline-block;width:128px;}.settings-card,.settings-card label,.settings-card input{font-size:18px;}.settings-card button,.settings-card a.btn{font-size:16px;}.settings-card small{font-size:15px;}"
+        ".muted{color:#aaa;}input,select{background:#050505;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;margin:4px 0 10px 0;min-width:160px;}input.filecheck{min-width:0;width:auto;margin:0;}input.radio{accent-color:crimson;min-width:0;width:auto;margin:0;}input.setting-check{accent-color:crimson;min-width:0;width:auto;margin:0;}select.settings-field,input.settings-field,button.btn.settings-field,a.btn.settings-field{box-sizing:border-box;height:39px;margin:4px 0 10px 0;vertical-align:top;}label{display:block;margin-top:8px;}small{color:#aaa;}.settings-check-row{display:flex;align-items:center;gap:8px;}.settings-check-text{display:inline-block;width:128px;}.settings-card,.settings-card label,.settings-card input,.settings-card select{font-size:18px;}.settings-card button,.settings-card a.btn{font-size:16px;}.settings-card small{font-size:15px;}"
         ".show-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px 0;}"
         ".show-label{display:inline-block;min-width:120px;margin:0;}"
         ".show-name{min-width:260px;width:360px;max-width:100%;margin:0;}"
@@ -1308,9 +1308,18 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>LTC: <span id='home-ltc' class='%s'>%s</span> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
+        "<p>LTC: <span id='home-ltc' class='%s'>%s</span></p>",
         state.ltc_valid ? "ok" : "bad",
-        state.ltc_valid ? "OK" : "---",
+        state.ltc_valid ? "OK" : "---"
+    );
+    web_send_chunk(req, line);
+
+    net_config_tc_out_fps_t tc_out_fps = net_config_get_tc_out_fps();
+    snprintf(
+        line,
+        sizeof(line),
+        "<p>TC Out: <b id='home-tc-out-fps'>%d fps</b> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
+        (int)tc_out_fps,
         state.tc.hours,
         state.tc.minutes,
         state.tc.seconds,
@@ -1425,11 +1434,12 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "\"tc\":\"%02u:%02u:%02u:%02u\",",
+        "\"tc\":\"%02u:%02u:%02u:%02u\",\"tc_out_fps\":%d,",
         state.tc.hours,
         state.tc.minutes,
         state.tc.seconds,
-        state.tc.frames
+        state.tc.frames,
+        (int)net_config_get_tc_out_fps()
     );
     web_send_chunk(req, line);
 
@@ -1507,7 +1517,7 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "</div>");
 
     web_send_chunk(req, "<div class='card'>");
-    web_send_chunk(req, "<p>Na tomto programu se mnou spolupracovali Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI.</p>");
+    web_send_chunk(req, "<p>Na tomto programu se podíleli Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI, kterým tímto děkuji za významnou pomoc :-)</p>");
     web_send_chunk(req, "<p>K tomuto programu neuplatňuji žádná autorská práva. Je volně použitelný, upravitelný a šiřitelný bez omezení.</p>");
     web_send_chunk(req, "<p>Zdrojový kód je dostupný na GitHubu: <a href='https://github.com/robelto3/ATEM_LOGGER_ESP-IDF'>robelto3/ATEM_LOGGER_ESP-IDF</a></p>");
     web_send_chunk(req, "</div>");
@@ -1612,7 +1622,7 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "setOkBad('home-ltc',!!s.ltc);"
         "setText('home-pgm',s.pgm);"
         "setText('home-pvw',s.pvw);"
-        "setText('home-tc',s.tc);"
+        "setText('home-tc',s.tc);setText('home-tc-out-fps',s.tc_out_fps+' fps');"
         "setTally('home-pgm-tally',!!s.pgm_tally,'/save_program_tally');"
         "setTally('home-pvw-tally',!!s.pvw_tally,'/save_preview_tally');"
         "setText('home-cut-count',formatNumberSpaces(s.cuts));"
@@ -1697,6 +1707,7 @@ static esp_err_t web_network_handler(httpd_req_t *req)
     char atem_ip[NET_CONFIG_IP_STR_LEN] = {0};
     char netmask[NET_CONFIG_IP_STR_LEN] = {0};
     char ltc_correction_text[16] = {0};
+    net_config_tc_out_fps_t tc_out_fps = net_config_get_tc_out_fps();
 
     net_config_get_server_ip_string(server_ip, sizeof(server_ip));
     net_config_get_atem_ip_string(atem_ip, sizeof(atem_ip));
@@ -1725,6 +1736,13 @@ static esp_err_t web_network_handler(httpd_req_t *req)
         web_send_chunk(req, " checked");
     }
     web_send_chunk(req, "></label><small class='settings-note'>Zaškrtnuto = zelené Preview tally výstupy jsou aktivní. Odškrtnuto = PVW výstupy jsou zhasnuté. Změna se uloží hned.</small>");
+    web_send_chunk(req, "</form>");
+
+    web_send_chunk(req, "<form class='settings-section-spaced' action='/save_tc_out_fps' method='get'>");
+    web_send_chunk(req, "<label>TC Out</label><select class='settings-field' name='fps' onchange='this.form.submit()' style='min-width:110px'>");
+    web_send_chunk(req, tc_out_fps == NET_CONFIG_TC_OUT_FPS_25 ? "<option value='25' selected>25 fps</option>" : "<option value='25'>25 fps</option>");
+    web_send_chunk(req, tc_out_fps == NET_CONFIG_TC_OUT_FPS_50 ? "<option value='50' selected>50 fps</option>" : "<option value='50'>50 fps</option>");
+    web_send_chunk(req, "</select><small class='settings-note settings-note-ltc'>Určuje frame rate výstupního timecodu pro EDL.</small>");
     web_send_chunk(req, "</form>");
 
     web_send_chunk(req, "<form class='settings-section-spaced' action='/save_ltc_correction' method='get'>");
@@ -1804,6 +1822,40 @@ static esp_err_t web_save_preview_tally_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Location", back_home ? "/" : "/network");
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_sendstr(req, back_home ? "Redirecting to Home" : "Redirecting to settings");
+    return ESP_OK;
+}
+
+static esp_err_t web_save_tc_out_fps_handler(httpd_req_t *req)
+{
+    char fps_text[8] = {0};
+    char *end = NULL;
+    long fps_value = 0;
+    net_config_tc_out_fps_t fps = NET_CONFIG_DEFAULT_TC_OUT_FPS;
+
+    bool has_fps = (web_get_query_value(req, "fps", fps_text, sizeof(fps_text)) == ESP_OK);
+    if (has_fps) {
+        fps_value = strtol(fps_text, &end, 10);
+        if (end == fps_text || *end != '\0') {
+            has_fps = false;
+        } else {
+            has_fps = net_config_parse_tc_out_fps((int)fps_value, &fps);
+        }
+    }
+
+    esp_err_t ret = has_fps ? net_config_set_tc_out_fps(fps) : ESP_ERR_INVALID_ARG;
+    if (ret != ESP_OK) {
+        web_send_html_header(req, "ATEM Logger - nastavení");
+        web_send_chunk(req, "<h1>Nastavení</h1>");
+        web_send_chunk(req, "<div class='card'><p><span class='bad'>TC Out nastavení nešlo uložit.</span></p>");
+        web_send_chunk(req, "<p>Povolené hodnoty jsou 25 fps a 50 fps.</p><p><a class='btn' href='/network'>Zpět na nastavení</a></p></div>");
+        web_send_html_footer(req);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/network");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Redirecting to settings");
     return ESP_OK;
 }
 
@@ -3309,7 +3361,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 22;
+    config.max_uri_handlers = 28;
     config.stack_size = WEB_SERVER_TASK_STACK;
     config.core_id = WEB_SERVER_TASK_CORE;
     config.lru_purge_enable = true;
@@ -3374,6 +3426,13 @@ esp_err_t web_server_start(void)
         .uri = "/save_preview_tally",
         .method = HTTP_GET,
         .handler = web_save_preview_tally_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t save_tc_out_fps_uri = {
+        .uri = "/save_tc_out_fps",
+        .method = HTTP_GET,
+        .handler = web_save_tc_out_fps_handler,
         .user_ctx = NULL,
     };
 
@@ -3483,6 +3542,7 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_program_tally_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_preview_tally_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_tc_out_fps_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_ltc_correction_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &shows_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_shows_uri));

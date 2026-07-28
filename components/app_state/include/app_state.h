@@ -13,9 +13,8 @@ extern "C" {
 
 #define APP_STATE_FILENAME_MAX_LEN 32
 
-// Vstupní LTC je 25 fps. Pro display/eventy/EDL používáme výstupní TC
-// s dvojnásobnou hodnotou frame: 00, 02, 04 ... 48.
-// Liché frames se nedopočítávají ani nepoužívají.
+// Vstupní LTC je 25 fps. Pro 50fps výstupní TC se frame násobí 2
+// na sudé hodnoty 00, 02, 04 ... 48. Pro 25fps výstup se nechá přímo.
 #define APP_STATE_LTC_OUTPUT_FRAME_MULTIPLIER 2
 
 typedef struct {
@@ -28,7 +27,7 @@ typedef struct {
 
     rtc_datetime_t rtc;
     // Výstupní timecode pro display/eventy/EDL.
-    // Pozor: frame je už převedený z LTC 25 fps na sudé hodnoty 00..48.
+    // Frame je podle nastavení TC Out buď 25fps, nebo 50fps sudý.
     ltc_time_t tc;
 
     char current_filename[APP_STATE_FILENAME_MAX_LEN];

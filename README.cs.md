@@ -261,4 +261,4 @@ Zdrojový kód je dostupný na GitHubu:
 
 ## Poznámka
 
-Na tomto programu se mnou spolupracovali Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI.
+Na tomto programu se podíleli Astra (ChatGPT) a Codík (Codex), moji AI asistenti od OpenAI, kterým tímto děkuji za významnou pomoc :-)

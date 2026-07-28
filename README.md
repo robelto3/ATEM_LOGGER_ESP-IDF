@@ -261,4 +261,4 @@ Source code is available on GitHub:
 
 ## Note
 
-Astra (ChatGPT) and Codík (Codex), my AI assistants from OpenAI, collaborated with me on this program.
+Astra (ChatGPT) and Codík (Codex), my AI assistants from OpenAI, contributed to this program, and I thank them for their significant help :-)

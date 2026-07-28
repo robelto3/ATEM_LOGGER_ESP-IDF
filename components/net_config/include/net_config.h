@@ -27,6 +27,11 @@ typedef struct {
     uint8_t d;
 } net_config_ip4_t;
 
+typedef enum {
+    NET_CONFIG_TC_OUT_FPS_25 = 25,
+    NET_CONFIG_TC_OUT_FPS_50 = 50,
+} net_config_tc_out_fps_t;
+
 esp_err_t net_config_init(void);
 
 void net_config_get_server_ip(net_config_ip4_t *ip);
@@ -50,6 +55,13 @@ bool net_config_get_program_tally_enabled(void);
 esp_err_t net_config_set_program_tally_enabled(bool enabled);
 bool net_config_get_preview_tally_enabled(void);
 esp_err_t net_config_set_preview_tally_enabled(bool enabled);
+
+// Výstupní frame rate pro display/eventy/EDL.
+// Výchozí hodnota je 50 fps, aby zůstalo zachované původní chování.
+#define NET_CONFIG_DEFAULT_TC_OUT_FPS NET_CONFIG_TC_OUT_FPS_50
+bool net_config_parse_tc_out_fps(int value, net_config_tc_out_fps_t *fps);
+net_config_tc_out_fps_t net_config_get_tc_out_fps(void);
+esp_err_t net_config_set_tc_out_fps(net_config_tc_out_fps_t fps);
 
 // Korekce vstupního LTC v původních 25fps framech.
 // Záporná hodnota posune logovaný TC zpět, kladná dopředu.

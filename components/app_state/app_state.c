@@ -52,10 +52,11 @@ static ltc_time_t app_state_make_output_tc(const ltc_time_t *ltc)
         out.frames = (uint8_t)(total_frames % APP_STATE_LTC_INPUT_FPS);
     }
 
-    // LTC vstup běží 25 fps, ale pro display/eventy/EDL chceme
-    // sudý výstupní frame v rozsahu 00..48.
-    // Žádné liché mezisnímky nedopočítáváme.
-    out.frames = (uint8_t)(out.frames * APP_STATE_LTC_OUTPUT_FRAME_MULTIPLIER);
+    // LTC vstup běží 25 fps. Pro 50fps výstup používáme jen sudé framy
+    // v rozsahu 00..48; liché mezisnímky nedopočítáváme.
+    if (net_config_get_tc_out_fps() == NET_CONFIG_TC_OUT_FPS_50) {
+        out.frames = (uint8_t)(out.frames * APP_STATE_LTC_OUTPUT_FRAME_MULTIPLIER);
+    }
 
     return out;
 }
