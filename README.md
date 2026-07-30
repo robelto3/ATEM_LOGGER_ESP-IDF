@@ -4,18 +4,19 @@
 
 ATEM Logger is a standalone ESP32-P4-ETH based logger for Blackmagic ATEM switchers. It monitors Program/Preview state, reads LTC timecode, and writes edit events into CMX EDL files on an SD card.
 
-The project is designed for a workflow where the reference LTC runs at 25 fps, while the resulting EDL is used for 50p editing. The logger stores timecode as TCx2: each 25 fps LTC frame is multiplied by two and missing odd frames are not generated.
+The project expects reference LTC at 25 fps. The output timecode can be selected as 25 fps or 50 fps. In 50 fps mode, the logger uses TCx2: each 25 fps LTC frame is multiplied by two and missing odd frames are not generated.
 
 ## Main Features
 
 - ATEM Program / Preview reading over Ethernet using the `PrgI` and `PrvI` UDP commands,
 - logging Program bus changes as EDL events,
-- LTC 25 fps input and TCx2 conversion for EDL and OLED display,
-- configurable LTC correction in original 25 fps LTC frames,
+- LTC 25 fps input and selectable 25 fps/50 fps TC output for EDL and OLED display,
+- configurable TC Out mode and LTC correction in original 25 fps LTC frames,
 - automatic EDL file creation on the SD card,
 - stored show names and automatic `TITLE:` lines in EDL files,
 - cut counter for the current EDL file,
 - web interface for Home, files, archive, trash, show names, settings and About,
+- Home LTC status with input format warning for unexpected LTC,
 - independently switchable Program Tally and Preview Tally outputs,
 - OLED status screen and startup IP screen,
 - RTC synchronization from the browser time,
@@ -96,15 +97,15 @@ IP addresses are stored in NVS and can be changed on the `Settings` page. After 
 
 Main pages:
 
-- `Home` - Ethernet, ATEM, LTC, SD card, PGM/PVW, Tally, cut count, current file and show name,
+- `Home` - Ethernet, ATEM, LTC, SD card, PGM/PVW, Tally, TC Out, cut count, current file and show name,
 - `Files on SD card` - EDL file list, filters, content preview, download, archive and move to trash,
 - `Archive` - archived files with restore action,
 - `Trash` - restore, permanent delete and empty trash,
 - `Show names` - edit up to 5 stored show names and select the active one,
-- `Settings` - Program/Preview Tally, LTC correction, logger and ATEM IP, Reboot,
+- `Settings` - Program/Preview Tally, TC Out 25/50 fps, LTC correction, logger and ATEM IP, Reboot,
 - `About` - short project description.
 
-The `Home` page refreshes live values through `/api/state`.
+The `Home` page refreshes live values through `/api/state`. Clicking the `TC Out` fps value opens the Settings page.
 
 ## SD Card And Files
 
@@ -141,7 +142,7 @@ Format:
 - numbered events,
 - camera name based on the ATEM input,
 - `TITLE:` based on the active show name,
-- source in/out and record in/out based on LTC/TCx2.
+- source in/out and record in/out based on LTC and the selected TC Out mode.
 
 Example:
 
@@ -155,6 +156,15 @@ FCM: NON-DROP FRAME
 *SOURCE FILE: CAM7
 ```
 
+## TC Out And LTC Format
+
+The LTC input is expected to be 25 fps. The `TC Out` setting controls the timecode written into EDL files and shown on the OLED:
+
+- `25 fps` keeps the decoded LTC frame number unchanged,
+- `50 fps` multiplies the decoded 25 fps frame by two, so only even 50p frames are used.
+
+The `Home` page shows `LTC: OK   25 fps` when valid LTC is present. If a signal is present but does not match the expected LTC format, it shows `LTC: ERR   expected 25 fps`. With no LTC signal, it shows `LTC: ---`.
+
 ## LTC Correction
 
 LTC correction is configured on the `Settings` page.
@@ -165,7 +175,7 @@ The value is entered in original 25 fps LTC frames:
 - positive values move the logged timecode forwards,
 - allowed range is `-24` to `+24`.
 
-Because the output TC is TCx2, correction `-2` on the input LTC corresponds to `-4` frames in the resulting 50p EDL.
+In `TC Out: 50 fps` mode, correction `-2` on the input LTC corresponds to `-4` frames in the resulting 50p EDL. In `TC Out: 25 fps` mode, the same correction stays `-2` output frames.
 
 ## OLED
 
@@ -178,7 +188,7 @@ Logger 10.0.0.9
 ATEM 10.0.0.10
 ```
 
-Then it switches to the main status screen with ATEM/LTC state, PGM/PVW, TCx2 and cut count.
+Then it switches to the main status screen with ATEM/LTC state, PGM/PVW, output TC and cut count.
 
 ## Components
 

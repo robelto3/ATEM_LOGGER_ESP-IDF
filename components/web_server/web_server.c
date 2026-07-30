@@ -1490,7 +1490,7 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "<h2>ATEM_LOGGER_ESP-IDF</h2>");
     web_send_chunk(req, "<p><b>ESP32-P4 ATEM logger</b> je zařízení pro záznam střihů z ATEM switcheru do EDL souborů na SD kartu.</p>");
     web_send_chunk(req, "<p>Projekt běží na desce ESP32-P4-ETH v prostředí ESP-IDF a je stavěný modulárně po komponentách.</p>");
-    web_send_chunk(req, "<p><span class='about-badge'>ATEM</span><span class='about-badge'>LTC 25 fps</span><span class='about-badge'>TCx2</span><span class='about-badge'>CMX EDL</span><span class='about-badge'>OLED</span><span class='about-badge'>Web</span><span class='about-badge'>Archiv</span><span class='about-badge'>Koš</span><span class='about-badge'>Tally</span></p>");
+    web_send_chunk(req, "<p><span class='about-badge'>ATEM</span><span class='about-badge'>LTC 25 fps</span><span class='about-badge'>TC Out 25/50 fps</span><span class='about-badge'>CMX EDL</span><span class='about-badge'>OLED</span><span class='about-badge'>Web</span><span class='about-badge'>Archiv</span><span class='about-badge'>Koš</span><span class='about-badge'>Tally</span></p>");
     web_send_chunk(req, "</div>");
 
     web_send_chunk(req, "<div class='card'>");
@@ -1498,13 +1498,13 @@ static esp_err_t web_about_handler(httpd_req_t *req)
     web_send_chunk(req, "<ul class='about-list'>");
     web_send_chunk(req, "<li>čtení ATEM Program / Preview přes UDP parser <b>PrgI</b> a <b>PrvI</b></li>");
     web_send_chunk(req, "<li>zápis změn Program busu do EDL souboru ve formátu <b>CMX / NON-DROP FRAME</b></li>");
-    web_send_chunk(req, "<li>LTC vstup 25 fps s nastavitelnou korekcí a převod na <b>TCx2</b> pro EDL i OLED</li>");
+    web_send_chunk(req, "<li>LTC vstup 25 fps s nastavitelnou korekcí a volitelným <b>TC Out 25/50 fps</b> pro EDL i OLED</li>");
     web_send_chunk(req, "<li>vytváření EDL souborů na SD kartě s názvem <b>DDMMRRNN.edl</b></li>");
     web_send_chunk(req, "<li>uložené názvy pořadů a automatický <b>TITLE: Název pořadu</b></li>");
     web_send_chunk(req, "<li>webové zobrazení, stažení, archivace a přesun EDL souborů do koše</li>");
     web_send_chunk(req, "<li>samostatné stránky pro Archiv a Koš s obnovou souborů a definitivním mazáním v koši</li>");
     web_send_chunk(req, "<li>RTC synchronizace z času prohlížeče</li>");
-    web_send_chunk(req, "<li>OLED úvodní IP obrazovka a stav: ATEM, LTC, PGM, PVW, TCx2 a počet střihů</li>");
+    web_send_chunk(req, "<li>OLED úvodní IP obrazovka a stav: ATEM, LTC, PGM, PVW, výstupní TC a počet střihů</li>");
     web_send_chunk(req, "<li>samostatně vypínatelné Program / Preview tally výstupy</li>");
     web_send_chunk(req, "<li>nastavení IP loggeru a ATEM switcheru s pohodlným rebootem a přechodem na novou IP</li>");
     web_send_chunk(req, "<li>fake cut test přes GPIO46 bez nutnosti připojeného ATEMu</li>");

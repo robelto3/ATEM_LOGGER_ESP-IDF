@@ -4,18 +4,19 @@
 
 ATEM Logger je samostatný logger pro ESP32-P4-ETH, který sleduje Program/Preview stav ATEM switcheru, čte LTC timecode a zapisuje střihové události do CMX EDL souborů na SD kartu.
 
-Projekt je určený pro workflow, kde referenční LTC běží na 25 fps, ale EDL se používá pro 50p střih. Logger proto ukládá čas jako TCx2: frame z LTC 25 fps se násobí dvěma a nedopočítávají se liché snímky.
+Projekt očekává referenční LTC 25 fps. Výstupní timecode lze nastavit na 25 fps nebo 50 fps. V režimu 50 fps logger používá TCx2: frame z LTC 25 fps se násobí dvěma a nedopočítávají se liché snímky.
 
 ## Hlavní Funkce
 
 - čtení ATEM Program / Preview přes Ethernet a UDP parser příkazů `PrgI` a `PrvI`,
 - záznam změn Program vstupu jako EDL eventy,
-- čtení LTC 25 fps a převod na TCx2 pro EDL i OLED,
-- nastavitelná korekce LTC ve framech původního 25fps LTC,
+- čtení LTC 25 fps a volitelný TC výstup 25 fps/50 fps pro EDL i OLED,
+- nastavitelný režim TC Out a korekce LTC ve framech původního 25fps LTC,
 - automatické zakládání EDL souborů na SD kartě,
 - uložené názvy pořadů a automatický `TITLE:` v EDL,
 - počítání střihů od založení aktuálního souboru,
 - webové rozhraní pro Home, soubory, archiv, koš, názvy pořadů, nastavení a About,
+- stav LTC na Home s varováním při neočekávaném formátu LTC,
 - samostatně vypínatelné Program Tally a Preview Tally,
 - OLED stavová obrazovka a startovací IP obrazovka,
 - RTC synchronizace z času prohlížeče,
@@ -96,15 +97,15 @@ IP adresy se ukládají do NVS a lze je měnit na stránce `Nastavení`. Po změ
 
 Hlavní stránky:
 
-- `Home` - stav Ethernetu, ATEMu, LTC, SD karty, PGM/PVW, Tally, počet střihů, aktuální soubor a název pořadu,
+- `Home` - stav Ethernetu, ATEMu, LTC, SD karty, PGM/PVW, Tally, TC Out, počet střihů, aktuální soubor a název pořadu,
 - `Soubory na SD kartě` - výpis EDL souborů, filtrování, zobrazení obsahu, stažení, archivace a přesun do koše,
 - `Archiv` - archivované soubory s možností vrácení,
 - `Koš` - vrácení souborů, definitivní smazání a vyprázdnění koše,
 - `Názvy pořadů` - editace až 5 uložených názvů a výběr aktivního pořadu,
-- `Nastavení` - Program/Preview Tally, korekce LTC, IP loggeru a ATEMu, Reboot,
+- `Nastavení` - Program/Preview Tally, TC Out 25/50 fps, korekce LTC, IP loggeru a ATEMu, Reboot,
 - `About` - stručný popis projektu.
 
-Na stránce `Home` jsou hodnoty průběžně obnovované přes `/api/state`.
+Na stránce `Home` jsou hodnoty průběžně obnovované přes `/api/state`. Kliknutí na hodnotu fps v řádku `TC Out` otevře stránku Nastavení.
 
 ## SD Karta A Soubory
 
@@ -141,7 +142,7 @@ Použitý formát:
 - číslované eventy,
 - název kamery podle ATEM vstupu,
 - `TITLE:` podle aktivního názvu pořadu,
-- source in/out a record in/out podle LTC/TCx2.
+- source in/out a record in/out podle LTC a zvoleného režimu TC Out.
 
 Příklad:
 
@@ -155,6 +156,15 @@ FCM: NON-DROP FRAME
 *SOURCE FILE: CAM7
 ```
 
+## TC Out A Formát LTC
+
+Na LTC vstupu se očekává 25 fps. Nastavení `TC Out` určuje timecode zapisovaný do EDL souborů a zobrazovaný na OLED:
+
+- `25 fps` ponechá dekódované číslo framu beze změny,
+- `50 fps` násobí dekódovaný 25fps frame dvěma, takže se používají jen sudé 50p framy.
+
+Na stránce `Home` se při platném LTC zobrazuje `LTC: OK   25 fps`. Pokud signál přichází, ale neodpovídá očekávanému formátu LTC, zobrazí se `LTC: ERR   očekáváno 25 fps`. Bez LTC signálu se zobrazuje `LTC: ---`.
+
 ## LTC Korekce
 
 Korekce LTC se nastavuje na stránce `Nastavení`.
@@ -165,7 +175,7 @@ Hodnota se zadává ve framech vstupního LTC 25 fps:
 - kladná hodnota posune logovaný timecode dopředu,
 - povolený rozsah je `-24` až `+24`.
 
-Protože výstupní TC je TCx2, korekce `-2` na vstupním LTC odpovídá posunu `-4` framy ve výsledném 50p EDL.
+V režimu `TC Out: 50 fps` korekce `-2` na vstupním LTC odpovídá posunu `-4` framy ve výsledném 50p EDL. V režimu `TC Out: 25 fps` stejná korekce zůstává `-2` výstupní framy.
 
 ## OLED
 
@@ -178,7 +188,7 @@ Logger 10.0.0.9
 ATEM 10.0.0.10
 ```
 
-Potom se zobrazí hlavní stavová obrazovka s ATEM/LTC stavem, PGM/PVW, TCx2 a počtem střihů.
+Potom se zobrazí hlavní stavová obrazovka s ATEM/LTC stavem, PGM/PVW, výstupním TC a počtem střihů.
 
 ## Komponenty
 
