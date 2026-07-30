@@ -1308,9 +1308,11 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>LTC: <span id='home-ltc' class='%s'>%s</span></p>",
-        state.ltc_valid ? "ok" : "bad",
-        state.ltc_valid ? "OK" : "---"
+        state.ltc_valid
+            ? "<p>LTC: <span id='home-ltc' class='ok'>OK</span><span id='home-ltc-in'> &nbsp; <b>25 fps</b></span></p>"
+            : (state.ltc_format_error
+                ? "<p>LTC: <span id='home-ltc' class='bad'>ERR</span><span id='home-ltc-in'> &nbsp; <b>očekáváno 25 fps</b></span></p>"
+                : "<p>LTC: <span id='home-ltc' class='bad'>---</span><span id='home-ltc-in'></span></p>")
     );
     web_send_chunk(req, line);
 
@@ -1318,7 +1320,7 @@ static void web_send_status_card(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "<p>TC Out: <b id='home-tc-out-fps'>%d fps</b> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
+        "<p>TC Out: <a href='/network' title='Nastavení TC Out'><b id='home-tc-out-fps'>%d fps</b></a> &nbsp; <b id='home-tc'>%02u:%02u:%02u:%02u</b></p>",
         (int)tc_out_fps,
         state.tc.hours,
         state.tc.minutes,
@@ -1421,9 +1423,10 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
     snprintf(
         line,
         sizeof(line),
-        "\"atem\":%s,\"ltc\":%s,\"pgm\":%u,\"pvw\":%u,\"pgm_tally\":%s,\"pvw_tally\":%s,",
+        "\"atem\":%s,\"ltc\":%s,\"ltc_error\":%s,\"pgm\":%u,\"pvw\":%u,\"pgm_tally\":%s,\"pvw_tally\":%s,",
         state.atem_connected ? "true" : "false",
         state.ltc_valid ? "true" : "false",
+        state.ltc_format_error ? "true" : "false",
         state.program_input,
         state.preview_input,
         program_tally_enabled ? "true" : "false",
@@ -1612,14 +1615,16 @@ static esp_err_t web_home_handler(httpd_req_t *req)
         "return false;"
         "}"
         "function setText(id,text){var e=document.getElementById(id);if(e){e.textContent=text;}}"
+        "function setHtml(id,html){var e=document.getElementById(id);if(e){e.innerHTML=html;}}"
         "function setOkBad(id,ok){var e=document.getElementById(id);if(e){e.textContent=ok?'OK':'---';e.className=ok?'ok':'bad';}}"
+        "function setLtc(ok,err){var e=document.getElementById('home-ltc');var f=document.getElementById('home-ltc-in');if(e){e.textContent=ok?'OK':(err?'ERR':'---');e.className=ok?'ok':'bad';}if(f){f.innerHTML=ok?' &nbsp; <b>25 fps</b>':(err?' &nbsp; <b>očekáváno 25 fps</b>':'');}}"
         "function setOnOff(id,on){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';}}"
         "function setTally(id,on,url){var e=document.getElementById(id);if(e){e.textContent=on?'ON':'OFF';e.className=on?'ok':'bad';e.href=on?url+'?back=home':url+'?enabled=1&back=home';e.title=on?'Vypnout':'Zapnout';}}"
         "function formatNumberSpaces(n){return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g,' ');}"
         "function updateHomeState(){"
         "fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){"
         "setOkBad('home-atem',!!s.atem);"
-        "setOkBad('home-ltc',!!s.ltc);"
+        "setLtc(!!s.ltc,!!s.ltc_error);"
         "setText('home-pgm',s.pgm);"
         "setText('home-pvw',s.pvw);"
         "setText('home-tc',s.tc);setText('home-tc-out-fps',s.tc_out_fps+' fps');"

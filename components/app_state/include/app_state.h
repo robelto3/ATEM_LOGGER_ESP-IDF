@@ -20,6 +20,7 @@ extern "C" {
 typedef struct {
     bool atem_connected;
     bool ltc_valid;
+    bool ltc_format_error;
     bool rtc_valid;
 
     uint8_t program_input;

@@ -68,6 +68,14 @@ static volatile uint8_t s_tc_minutes = 0;
 static volatile uint8_t s_tc_seconds = 0;
 static volatile uint8_t s_tc_frames = 0;
 static volatile int64_t s_last_valid_frame_time_us = 0;
+static volatile bool s_format_error = false;
+static volatile int64_t s_last_format_error_time_us = 0;
+
+static void IRAM_ATTR ltc_mark_format_error_isr(void)
+{
+    s_format_error = true;
+    s_last_format_error_time_us = s_last_edge_time_us;
+}
 
 static void IRAM_ATTR ltc_store_bit_isr(uint8_t bit)
 {
@@ -161,9 +169,11 @@ static void IRAM_ATTR ltc_decode_frame_isr(void)
         s_tc_valid = true;
         s_last_valid_frame_time_us = s_last_edge_time_us;
         s_decoded_count++;
+        s_format_error = false;
     } else {
         s_tc_valid = false;
         s_decode_error_count++;
+        ltc_mark_format_error_isr();
     }
 }
 
@@ -217,6 +227,7 @@ static void IRAM_ATTR ltc_process_interval_isr(uint32_t interval_us)
         if (s_pending_short) {
             // long po samotném shortu by u čistého BMC neměl přijít
             s_bit_error_count++;
+            ltc_mark_format_error_isr();
             s_pending_short = false;
         }
 
@@ -225,9 +236,11 @@ static void IRAM_ATTR ltc_process_interval_isr(uint32_t interval_us)
 
     } else {
         s_invalid_count++;
+        ltc_mark_format_error_isr();
 
         if (s_pending_short) {
             s_bit_error_count++;
+            ltc_mark_format_error_isr();
             s_pending_short = false;
         }
     }
@@ -349,6 +362,8 @@ void ltc_input_reset_stats(void)
     s_tc_seconds = 0;
     s_tc_frames = 0;
     s_last_valid_frame_time_us = 0;
+    s_format_error = false;
+    s_last_format_error_time_us = 0;
 
     portEXIT_CRITICAL(&s_ltc_mux);
 }
@@ -392,6 +407,8 @@ void ltc_input_get_stats(ltc_input_stats_t *stats)
     uint8_t tc_frames = s_tc_frames;
 
     bool pending_short = s_pending_short;
+    bool format_error = s_format_error;
+    int64_t last_format_error_time_us = s_last_format_error_time_us;
 
     int64_t last_edge_time_us = s_last_edge_time_us;
     uint32_t last_interval_us = s_last_interval_us;
@@ -428,7 +445,15 @@ void ltc_input_get_stats(ltc_input_stats_t *stats)
         }
     }
 
+    if (format_error) {
+        if (last_format_error_time_us <= 0 ||
+            (now_us - last_format_error_time_us) > LTC_VALID_TIMEOUT_US) {
+            format_error = false;
+        }
+    }
+
     stats->tc_valid = tc_valid;
+    stats->format_error = (!tc_valid && format_error);
     stats->tc_hours = tc_hours;
     stats->tc_minutes = tc_minutes;
     stats->tc_seconds = tc_seconds;
@@ -463,11 +488,14 @@ bool ltc_input_get_time(ltc_input_time_t *time)
     uint8_t minutes = s_tc_minutes;
     uint8_t seconds = s_tc_seconds;
     uint8_t frames = s_tc_frames;
+    bool format_error = s_format_error;
+    int64_t last_format_error_time_us = s_last_format_error_time_us;
 
     portEXIT_CRITICAL(&s_ltc_mux);
 
+    int64_t now_us = esp_timer_get_time();
+
     if (valid) {
-        int64_t now_us = esp_timer_get_time();
 
         if (last_valid_frame_time_us <= 0 ||
             (now_us - last_valid_frame_time_us) > LTC_VALID_TIMEOUT_US) {
@@ -479,11 +507,19 @@ bool ltc_input_get_time(ltc_input_time_t *time)
         }
     }
 
+    if (format_error) {
+        if (last_format_error_time_us <= 0 ||
+            (now_us - last_format_error_time_us) > LTC_VALID_TIMEOUT_US) {
+            format_error = false;
+        }
+    }
+
     time->hours = hours;
     time->minutes = minutes;
     time->seconds = seconds;
     time->frames = frames;
     time->valid = valid;
+    time->format_error = (!valid && format_error);
 
     return valid;
 }

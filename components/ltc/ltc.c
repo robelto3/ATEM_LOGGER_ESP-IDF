@@ -22,6 +22,7 @@ bool ltc_get_time(ltc_time_t *time)
     time->seconds = input_time.seconds;
     time->frames = input_time.frames;
     time->valid = input_time.valid;
+    time->format_error = input_time.format_error;
 
     return valid;
 }

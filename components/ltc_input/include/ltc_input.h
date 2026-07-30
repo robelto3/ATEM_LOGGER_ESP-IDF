@@ -14,6 +14,7 @@ typedef struct {
     uint8_t seconds;
     uint8_t frames;
     bool valid;
+    bool format_error;
 }   ltc_input_time_t;
 
 typedef struct {
@@ -52,6 +53,7 @@ typedef struct {
     int level;
     bool signal_seen;
     bool pending_short;
+    bool format_error;
 } ltc_input_stats_t;
 
 esp_err_t ltc_input_init(void);

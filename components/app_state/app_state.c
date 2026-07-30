@@ -113,9 +113,11 @@ void app_state_update_ltc(const ltc_time_t *ltc)
     if (ltc) {
         s_state.tc = app_state_make_output_tc(ltc);
         s_state.ltc_valid = ltc->valid;
+        s_state.ltc_format_error = ltc->format_error;
     } else {
         memset(&s_state.tc, 0, sizeof(s_state.tc));
         s_state.ltc_valid = false;
+        s_state.ltc_format_error = false;
     }
 
     s_state.updated_ms = now_ms;

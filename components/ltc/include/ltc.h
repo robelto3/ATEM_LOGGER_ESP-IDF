@@ -14,6 +14,7 @@ typedef struct {
     uint8_t seconds;
     uint8_t frames;
     bool valid;
+    bool format_error;
 } ltc_time_t;
 
 esp_err_t ltc_init(void);
