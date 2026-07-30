@@ -41,17 +41,11 @@ static void tally_outputs_apply(uint8_t program_input, uint8_t preview_input, bo
     for (uint8_t i = 0; i < TALLY_OUTPUT_INPUT_COUNT; i++) {
         uint8_t input_number = (uint8_t)(i + 1);
 
-        if (program_tally_enabled) {
-            tally_outputs_set_pin(s_program_pins[i], program_input == input_number);
-        } else {
-            tally_outputs_set_pin(s_program_pins[i], false);
-        }
+        bool program_active = program_tally_enabled && (program_input == input_number);
+        bool preview_active = preview_tally_enabled && (preview_input == input_number) && !program_active;
 
-        if (preview_tally_enabled) {
-            tally_outputs_set_pin(s_preview_pins[i], preview_input == input_number);
-        } else {
-            tally_outputs_set_pin(s_preview_pins[i], false);
-        }
+        tally_outputs_set_pin(s_program_pins[i], program_active);
+        tally_outputs_set_pin(s_preview_pins[i], preview_active);
     }
 }
 
