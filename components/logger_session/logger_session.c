@@ -8,6 +8,7 @@
 #include "debug_control.h"
 #include "edl_writer.h"
 #include "file_protect.h"
+#include "freertos/FreeRTOS.h"
 #include "sd_storage.h"
 #include "show_config.h"
 
@@ -23,33 +24,21 @@
 // TITLE: Ranní vysílání
 // Pořadové číslo je už ve fyzickém názvu souboru DDMMRRNN.edl.
 
-typedef struct {
-    bool valid;
-    char title[LOGGER_SESSION_TITLE_MAX_LEN];
-    char filename[LOGGER_SESSION_FILENAME_MAX_LEN];
-    rtc_datetime_t created_rtc;
-} logger_session_state_t;
-
-static logger_session_state_t s_session;
+static logger_session_snapshot_t s_session;
+static portMUX_TYPE s_session_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void logger_session_clear(void)
 {
+    portENTER_CRITICAL(&s_session_mux);
     memset(&s_session, 0, sizeof(s_session));
-    strncpy(s_session.title, "NO_RTC", sizeof(s_session.title) - 1);
-    strncpy(s_session.filename, "NO_RTC.edl", sizeof(s_session.filename) - 1);
+    s_session.status = LOGGER_SESSION_IDLE;
+    s_session.last_error = ESP_OK;
+    portEXIT_CRITICAL(&s_session_mux);
 }
 
 static bool logger_session_is_digit(char c)
 {
     return c >= '0' && c <= '9';
-}
-
-static int logger_session_char_to_lower(int c)
-{
-    if (c >= 'A' && c <= 'Z') {
-        return c + ('a' - 'A');
-    }
-    return c;
 }
 
 static bool logger_session_parse_index_for_prefix(const char *filename,
@@ -134,13 +123,16 @@ static uint8_t logger_session_find_next_file_index(const rtc_datetime_t *rtc)
     return (uint8_t)(max_index + 1U);
 }
 
-static void logger_session_make_file_name(const rtc_datetime_t *rtc, uint8_t file_index)
+static void logger_session_make_file_name(const rtc_datetime_t *rtc,
+                                          uint8_t file_index,
+                                          char *out,
+                                          size_t out_len)
 {
     unsigned year_2digits = (unsigned)(rtc->year % 100U);
 
     snprintf(
-        s_session.filename,
-        sizeof(s_session.filename),
+        out,
+        out_len,
         "%02u%02u%02u%02u.edl",
         rtc->date,
         rtc->month,
@@ -149,49 +141,96 @@ static void logger_session_make_file_name(const rtc_datetime_t *rtc, uint8_t fil
     );
 }
 
-static void logger_session_make_title(void)
+static void logger_session_make_title(char *out, size_t out_len)
 {
     char show_name[SHOW_CONFIG_NAME_MAX_LEN];
     show_config_get_active_name(show_name, sizeof(show_name));
 
-    snprintf(
-        s_session.title,
-        sizeof(s_session.title),
-        "%s",
-        show_name
-    );
+    snprintf(out, out_len, "%s", show_name);
+}
+
+static void logger_session_set_error(esp_err_t error, const char *filename)
+{
+    portENTER_CRITICAL(&s_session_mux);
+    s_session.status = LOGGER_SESSION_ERROR;
+    s_session.valid = false;
+    s_session.last_error = error;
+    s_session.title[0] = '\0';
+    memset(&s_session.created_rtc, 0, sizeof(s_session.created_rtc));
+    if (filename) {
+        snprintf(s_session.filename, sizeof(s_session.filename), "%s", filename);
+    } else {
+        s_session.filename[0] = '\0';
+    }
+    portEXIT_CRITICAL(&s_session_mux);
+
+    app_state_set_current_filename("---");
+}
+
+esp_err_t logger_session_init_idle(void)
+{
+    logger_session_clear();
+    (void)edl_writer_stop();
+    app_state_set_current_filename("---");
+    return ESP_OK;
 }
 
 esp_err_t logger_session_start_new_from_rtc(const rtc_datetime_t *rtc, bool rtc_valid)
 {
-    logger_session_clear();
+    char filename[LOGGER_SESSION_FILENAME_MAX_LEN] = {0};
+    char title[LOGGER_SESSION_TITLE_MAX_LEN] = {0};
 
-    if (rtc && rtc_valid) {
-        uint8_t file_index = logger_session_find_next_file_index(rtc);
+    portENTER_CRITICAL(&s_session_mux);
+    s_session.status = LOGGER_SESSION_STARTING;
+    s_session.valid = false;
+    s_session.last_error = ESP_OK;
+    s_session.title[0] = '\0';
+    s_session.filename[0] = '\0';
+    memset(&s_session.created_rtc, 0, sizeof(s_session.created_rtc));
+    portEXIT_CRITICAL(&s_session_mux);
 
-        s_session.valid = true;
-        s_session.created_rtc = *rtc;
-        logger_session_make_file_name(rtc, file_index);
-        logger_session_make_title();
+    if (!rtc || !rtc_valid) {
+        (void)edl_writer_stop();
+        logger_session_set_error(ESP_ERR_INVALID_STATE, NULL);
+        return ESP_ERR_INVALID_STATE;
     }
 
-    app_state_set_current_filename(s_session.filename);
+    if (!sd_storage_is_mounted()) {
+        (void)edl_writer_stop();
+        logger_session_set_error(ESP_ERR_INVALID_STATE, NULL);
+        return ESP_ERR_INVALID_STATE;
+    }
 
-    edl_writer_write_header(
-        s_session.filename,
-        s_session.title,
-        &s_session.created_rtc,
-        s_session.valid
-    );
+    uint8_t file_index = logger_session_find_next_file_index(rtc);
+    logger_session_make_file_name(rtc, file_index, filename, sizeof(filename));
+    logger_session_make_title(title, sizeof(title));
 
-    esp_err_t protect_ret = file_protect_set_protected(s_session.filename, true);
+    esp_err_t writer_ret = edl_writer_write_header(filename, title, rtc, true);
+    if (writer_ret != ESP_OK) {
+        logger_session_set_error(writer_ret, filename);
+        return writer_ret;
+    }
+
+    esp_err_t protect_ret = file_protect_set_protected(filename, true);
     if (protect_ret != ESP_OK && debug_control_is_enabled()) {
         printf(
             "LOGGER SESSION: auto protect failed for %s, err=%s\n",
-            s_session.filename,
+            filename,
             esp_err_to_name(protect_ret)
         );
     }
+
+    portENTER_CRITICAL(&s_session_mux);
+    s_session.status = LOGGER_SESSION_ACTIVE;
+    s_session.valid = true;
+    s_session.last_error = ESP_OK;
+    s_session.created_rtc = *rtc;
+    snprintf(s_session.filename, sizeof(s_session.filename), "%s", filename);
+    snprintf(s_session.title, sizeof(s_session.title), "%s", title);
+    s_session.generation++;
+    portEXIT_CRITICAL(&s_session_mux);
+
+    app_state_set_current_filename(filename);
 
     return ESP_OK;
 }
@@ -199,6 +238,50 @@ esp_err_t logger_session_start_new_from_rtc(const rtc_datetime_t *rtc, bool rtc_
 esp_err_t logger_session_init_from_rtc(const rtc_datetime_t *rtc, bool rtc_valid)
 {
     return logger_session_start_new_from_rtc(rtc, rtc_valid);
+}
+
+esp_err_t logger_session_stop(void)
+{
+    char closing_filename[LOGGER_SESSION_FILENAME_MAX_LEN] = {0};
+    bool was_active = false;
+
+    portENTER_CRITICAL(&s_session_mux);
+    was_active = (s_session.status == LOGGER_SESSION_ACTIVE);
+    if (was_active) {
+        snprintf(closing_filename, sizeof(closing_filename), "%s", s_session.filename);
+    }
+    s_session.status = LOGGER_SESSION_STOPPING;
+    portEXIT_CRITICAL(&s_session_mux);
+
+    esp_err_t ret = edl_writer_stop();
+
+    portENTER_CRITICAL(&s_session_mux);
+    if (ret == ESP_OK) {
+        if (was_active && closing_filename[0] != '\0') {
+            snprintf(
+                s_session.last_closed_filename,
+                sizeof(s_session.last_closed_filename),
+                "%s",
+                closing_filename
+            );
+        }
+        s_session.status = LOGGER_SESSION_IDLE;
+        s_session.valid = false;
+        s_session.last_error = ESP_OK;
+        s_session.title[0] = '\0';
+        s_session.filename[0] = '\0';
+        memset(&s_session.created_rtc, 0, sizeof(s_session.created_rtc));
+    } else {
+        s_session.status = LOGGER_SESSION_ERROR;
+        s_session.last_error = ret;
+    }
+    portEXIT_CRITICAL(&s_session_mux);
+
+    if (ret == ESP_OK) {
+        app_state_set_current_filename("---");
+    }
+
+    return ret;
 }
 
 const char *logger_session_get_title(void)
@@ -213,5 +296,46 @@ const char *logger_session_get_filename(void)
 
 bool logger_session_is_valid(void)
 {
-    return s_session.valid;
+    bool valid;
+    portENTER_CRITICAL(&s_session_mux);
+    valid = s_session.valid;
+    portEXIT_CRITICAL(&s_session_mux);
+    return valid;
+}
+
+bool logger_session_is_active(void)
+{
+    bool active;
+    portENTER_CRITICAL(&s_session_mux);
+    active = (s_session.status == LOGGER_SESSION_ACTIVE);
+    portEXIT_CRITICAL(&s_session_mux);
+    return active;
+}
+
+const char *logger_session_status_name(logger_session_status_t status)
+{
+    switch (status) {
+    case LOGGER_SESSION_STARTING:
+        return "starting";
+    case LOGGER_SESSION_ACTIVE:
+        return "active";
+    case LOGGER_SESSION_STOPPING:
+        return "stopping";
+    case LOGGER_SESSION_ERROR:
+        return "error";
+    case LOGGER_SESSION_IDLE:
+    default:
+        return "idle";
+    }
+}
+
+void logger_session_get_snapshot(logger_session_snapshot_t *snapshot)
+{
+    if (!snapshot) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_session_mux);
+    *snapshot = s_session;
+    portEXIT_CRITICAL(&s_session_mux);
 }

@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 
 #include "app_state.h"
+#include "atem_control.h"
 #include "cut_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -38,6 +39,8 @@
 #define WEB_ARCHIVE_DIR_PATH    SD_STORAGE_MOUNT_POINT "/" WEB_ARCHIVE_DIR_NAME
 #define WEB_TRASH_DIR_NAME      "trash"
 #define WEB_TRASH_DIR_PATH      SD_STORAGE_MOUNT_POINT "/" WEB_TRASH_DIR_NAME
+#define WEB_EDL_COMMAND_TIMEOUT_MS 5000U
+#define WEB_ATEM_VIDEO_MODE_TIMEOUT_MS 8000U
 
 // Web server je pomalá/obslužná část projektu.
 // HTTP task držíme na Core 0, mimo rychlou ATEM/LTC část na Core 1.
@@ -1409,6 +1412,10 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
 {
     app_state_snapshot_t state;
     app_state_get_snapshot(&state);
+    atem_control_status_t atem_status;
+    atem_control_get_status(&atem_status);
+    logger_session_snapshot_t session;
+    logger_session_get_snapshot(&session);
 
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
@@ -1432,6 +1439,38 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
         program_tally_enabled ? "true" : "false",
         preview_tally_enabled ? "true" : "false"
     );
+    web_send_chunk(req, line);
+
+    web_send_chunk(req, "\"atem_product\":\"");
+    web_send_json_escaped(req, atem_status.product_name);
+    web_send_chunk(req, "\",");
+
+    snprintf(
+        line,
+        sizeof(line),
+        "\"atem_protocol\":\"%u.%u\",\"atem_video_modes_valid\":%s,\"atem_supported_video_modes\":%lu,",
+        (unsigned)atem_status.protocol_version_major,
+        (unsigned)atem_status.protocol_version_minor,
+        atem_status.video_modes_valid ? "true" : "false",
+        (unsigned long)atem_status.supported_video_modes
+    );
+    web_send_chunk(req, line);
+
+    if (atem_status.video_mode_valid) {
+        snprintf(
+            line,
+            sizeof(line),
+            "\"atem_video_mode_valid\":true,\"atem_video_mode\":%u,\"atem_video_format\":\"%s\",",
+            (unsigned)atem_status.video_mode,
+            atem_control_video_mode_name(atem_status.video_mode)
+        );
+    } else {
+        snprintf(
+            line,
+            sizeof(line),
+            "\"atem_video_mode_valid\":false,\"atem_video_mode\":null,\"atem_video_format\":\"\","
+        );
+    }
     web_send_chunk(req, line);
 
     snprintf(
@@ -1473,11 +1512,192 @@ static esp_err_t web_api_state_handler(httpd_req_t *req)
 
     web_send_chunk(req, "\"file\":\"");
     web_send_json_escaped(req, state.current_filename);
+    web_send_chunk(req, "\",");
+
+    snprintf(
+        line,
+        sizeof(line),
+        "\"edl_active\":%s,\"edl_state\":\"%s\",\"edl_generation\":%lu,",
+        session.status == LOGGER_SESSION_ACTIVE ? "true" : "false",
+        logger_session_status_name(session.status),
+        (unsigned long)session.generation
+    );
+    web_send_chunk(req, line);
+
+    web_send_chunk(req, "\"edl_file\":\"");
+    web_send_json_escaped(req, session.filename);
+    web_send_chunk(req, "\",\"edl_last_closed_file\":\"");
+    web_send_json_escaped(req, session.last_closed_filename);
+    web_send_chunk(req, "\",\"edl_error\":\"");
+    if (session.last_error != ESP_OK) {
+        web_send_json_escaped(req, esp_err_to_name(session.last_error));
+    }
     web_send_chunk(req, "\"");
 
     web_send_chunk(req, "}");
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
+}
+
+static esp_err_t web_send_edl_command_response(httpd_req_t *req, esp_err_t result)
+{
+    logger_session_snapshot_t session;
+    logger_session_get_snapshot(&session);
+
+    if (result == ESP_ERR_TIMEOUT) {
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+    } else if (result != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+    }
+
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+
+    char line[192];
+    snprintf(
+        line,
+        sizeof(line),
+        "{\"ok\":%s,\"edl_active\":%s,\"edl_state\":\"%s\",\"edl_generation\":%lu,",
+        result == ESP_OK ? "true" : "false",
+        session.status == LOGGER_SESSION_ACTIVE ? "true" : "false",
+        logger_session_status_name(session.status),
+        (unsigned long)session.generation
+    );
+    web_send_chunk(req, line);
+
+    web_send_chunk(req, "\"edl_file\":\"");
+    web_send_json_escaped(req, session.filename);
+    web_send_chunk(req, "\",\"edl_last_closed_file\":\"");
+    web_send_json_escaped(req, session.last_closed_filename);
+    web_send_chunk(req, "\",\"error\":\"");
+    if (result != ESP_OK) {
+        web_send_json_escaped(req, esp_err_to_name(result));
+    }
+    web_send_chunk(req, "\"}");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t web_api_edl_start_handler(httpd_req_t *req)
+{
+    esp_err_t ret = logger_events_request_edl_start(WEB_EDL_COMMAND_TIMEOUT_MS);
+    return web_send_edl_command_response(req, ret);
+}
+
+static esp_err_t web_api_edl_stop_handler(httpd_req_t *req)
+{
+    esp_err_t ret = logger_events_request_edl_stop(WEB_EDL_COMMAND_TIMEOUT_MS);
+    return web_send_edl_command_response(req, ret);
+}
+
+static esp_err_t web_send_atem_video_mode_response(
+    httpd_req_t *req,
+    esp_err_t result,
+    const char *requested_format,
+    const char *error
+)
+{
+    atem_control_status_t atem_status;
+    atem_control_get_status(&atem_status);
+
+    if (error && strcmp(error, "edl_active") == 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+    } else if (result == ESP_ERR_INVALID_ARG) {
+        httpd_resp_set_status(req, "400 Bad Request");
+    } else if (result == ESP_ERR_NOT_SUPPORTED) {
+        httpd_resp_set_status(req, "422 Unprocessable Content");
+    } else if (result == ESP_ERR_TIMEOUT) {
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+    } else if (result != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+    }
+
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+
+    char line[192];
+    snprintf(
+        line,
+        sizeof(line),
+        "{\"ok\":%s,\"atem\":%s,\"atem_video_mode_valid\":%s,",
+        result == ESP_OK ? "true" : "false",
+        atem_status.connected ? "true" : "false",
+        atem_status.video_mode_valid ? "true" : "false"
+    );
+    web_send_chunk(req, line);
+
+    if (atem_status.video_mode_valid) {
+        snprintf(
+            line,
+            sizeof(line),
+            "\"atem_video_mode\":%u,\"atem_video_format\":\"%s\",",
+            (unsigned)atem_status.video_mode,
+            atem_control_video_mode_name(atem_status.video_mode)
+        );
+    } else {
+        snprintf(
+            line,
+            sizeof(line),
+            "\"atem_video_mode\":null,\"atem_video_format\":\"\","
+        );
+    }
+    web_send_chunk(req, line);
+
+    web_send_chunk(req, "\"requested_video_format\":\"");
+    web_send_json_escaped(req, requested_format ? requested_format : "");
+    web_send_chunk(req, "\",\"error\":\"");
+    if (error && error[0] != '\0') {
+        web_send_json_escaped(req, error);
+    } else if (result != ESP_OK) {
+        web_send_json_escaped(req, esp_err_to_name(result));
+    }
+    web_send_chunk(req, "\"}");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t web_api_atem_video_mode_handler(httpd_req_t *req)
+{
+    char requested_format[16] = {0};
+    uint8_t video_mode = 0;
+
+    if (
+        web_get_query_value(
+            req,
+            "format",
+            requested_format,
+            sizeof(requested_format)
+        ) != ESP_OK
+        || !atem_control_video_mode_from_name(requested_format, &video_mode)
+    ) {
+        return web_send_atem_video_mode_response(
+            req,
+            ESP_ERR_INVALID_ARG,
+            requested_format,
+            "invalid_video_format"
+        );
+    }
+
+    logger_session_snapshot_t session;
+    logger_session_get_snapshot(&session);
+    if (
+        session.status == LOGGER_SESSION_STARTING
+        || session.status == LOGGER_SESSION_ACTIVE
+        || session.status == LOGGER_SESSION_STOPPING
+    ) {
+        return web_send_atem_video_mode_response(
+            req,
+            ESP_ERR_INVALID_STATE,
+            requested_format,
+            "edl_active"
+        );
+    }
+
+    esp_err_t ret = atem_control_set_video_mode(
+        video_mode,
+        WEB_ATEM_VIDEO_MODE_TIMEOUT_MS
+    );
+    return web_send_atem_video_mode_response(req, ret, requested_format, NULL);
 }
 
 static esp_err_t web_about_handler(httpd_req_t *req)
@@ -3366,7 +3586,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 28;
+    config.max_uri_handlers = 30;
     config.stack_size = WEB_SERVER_TASK_STACK;
     config.core_id = WEB_SERVER_TASK_CORE;
     config.lru_purge_enable = true;
@@ -3403,6 +3623,27 @@ esp_err_t web_server_start(void)
         .uri = "/api/state",
         .method = HTTP_GET,
         .handler = web_api_state_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_edl_start_uri = {
+        .uri = "/api/edl/start",
+        .method = HTTP_POST,
+        .handler = web_api_edl_start_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_edl_stop_uri = {
+        .uri = "/api/edl/stop",
+        .method = HTTP_POST,
+        .handler = web_api_edl_stop_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_atem_video_mode_uri = {
+        .uri = "/api/atem/video-mode",
+        .method = HTTP_POST,
+        .handler = web_api_atem_video_mode_handler,
         .user_ctx = NULL,
     };
 
@@ -3543,6 +3784,9 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &new_file_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &about_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &api_state_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &api_edl_start_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &api_edl_stop_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &api_atem_video_mode_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_network_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &save_program_tally_uri));

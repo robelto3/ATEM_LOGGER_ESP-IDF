@@ -82,7 +82,10 @@ void app_main(void)
     rtc_datetime_t rtc_boot = {0};
     esp_err_t rtc_boot_ret = rtc_read_datetime(&rtc_boot);
     app_state_update_rtc(&rtc_boot, rtc_boot_ret == ESP_OK);
-    ESP_ERROR_CHECK(logger_session_init_from_rtc(&rtc_boot, rtc_boot_ret == ESP_OK));
+    // Po restartu už automaticky nezakládáme nový EDL. Session zůstane IDLE
+    // a nový soubor vznikne až potvrzeným START požadavkem z HyperDeck Panelu
+    // nebo servisním tlačítkem NEW FILE.
+    ESP_ERROR_CHECK(logger_session_init_idle());
 
     ESP_ERROR_CHECK(ltc_init());
 

@@ -41,10 +41,10 @@ static void edl_writer_tc_to_string(const ltc_time_t *tc, char *out, size_t out_
     );
 }
 
-static void edl_writer_append_vprintf(const char *fmt, va_list args)
+static esp_err_t edl_writer_append_vprintf(const char *fmt, va_list args)
 {
     if (!s_file_output_enabled || s_edl_file_path[0] == '\0') {
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
 
     FILE *file = fopen(s_edl_file_path, "a");
@@ -52,21 +52,30 @@ static void edl_writer_append_vprintf(const char *fmt, va_list args)
         if (debug_control_is_enabled()) {
             printf("EDL SD: append FAILED: %s\n", s_edl_file_path);
         }
-        return;
+        return ESP_FAIL;
     }
 
-    vfprintf(file, fmt, args);
-    fflush(file);
+    bool write_ok = (vfprintf(file, fmt, args) >= 0);
+    bool flush_ok = (fflush(file) == 0);
 
     int fd = fileno(file);
+    bool sync_ok = true;
     if (fd >= 0) {
-        (void)fsync(fd);
+        sync_ok = (fsync(fd) == 0);
     }
 
-    fclose(file);
+    bool close_ok = (fclose(file) == 0);
+    if (!write_ok || !flush_ok || !sync_ok || !close_ok) {
+        if (debug_control_is_enabled()) {
+            printf("EDL SD: append/fsync FAILED: %s\n", s_edl_file_path);
+        }
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }
 
-static void edl_writer_console_and_file(const char *fmt, ...)
+static esp_err_t edl_writer_console_and_file(const char *fmt, ...)
 {
     va_list console_args;
     va_list file_args;
@@ -77,10 +86,12 @@ static void edl_writer_console_and_file(const char *fmt, ...)
     if (debug_control_is_enabled()) {
         vprintf(fmt, console_args);
     }
-    edl_writer_append_vprintf(fmt, file_args);
+    esp_err_t ret = edl_writer_append_vprintf(fmt, file_args);
 
     va_end(file_args);
     va_end(console_args);
+
+    return ret;
 }
 
 static void edl_writer_close_file(void)
@@ -155,10 +166,10 @@ esp_err_t edl_writer_init(void)
     return ESP_OK;
 }
 
-void edl_writer_write_header(const char *filename,
-                             const char *title,
-                             const rtc_datetime_t *created_rtc,
-                             bool rtc_valid)
+esp_err_t edl_writer_write_header(const char *filename,
+                                  const char *title,
+                                  const rtc_datetime_t *created_rtc,
+                                  bool rtc_valid)
 {
     if (debug_control_is_enabled()) {
         printf("LOGGER SESSION START\n");
@@ -171,7 +182,8 @@ void edl_writer_write_header(const char *filename,
         if (debug_control_is_enabled()) {
             printf("EDL HEADER: RTC invalid - header not complete\n");
         }
-        return;
+        edl_writer_close_file();
+        return ESP_ERR_INVALID_STATE;
     }
 
     esp_err_t open_ret = edl_writer_open_file(filename);
@@ -179,9 +191,10 @@ void edl_writer_write_header(const char *filename,
         if (debug_control_is_enabled()) {
             printf("EDL SD: file output disabled for this session\n");
         }
+        return open_ret;
     }
 
-    edl_writer_console_and_file(
+    esp_err_t ret = edl_writer_console_and_file(
         "*CREATED: %02u.%02u.%04u %02u:%02u:%02u\n",
         created_rtc->date,
         created_rtc->month,
@@ -190,9 +203,27 @@ void edl_writer_write_header(const char *filename,
         created_rtc->minutes,
         created_rtc->seconds
     );
-    edl_writer_console_and_file("TITLE: %s\n", title);
-    edl_writer_console_and_file("FCM: NON-DROP FRAME\n");
-    edl_writer_console_and_file("\n");
+    if (ret == ESP_OK) {
+        ret = edl_writer_console_and_file("TITLE: %s\n", title);
+    }
+    if (ret == ESP_OK) {
+        ret = edl_writer_console_and_file("FCM: NON-DROP FRAME\n");
+    }
+    if (ret == ESP_OK) {
+        ret = edl_writer_console_and_file("\n");
+    }
+
+    if (ret != ESP_OK) {
+        edl_writer_close_file();
+    }
+
+    return ret;
+}
+
+esp_err_t edl_writer_stop(void)
+{
+    edl_writer_close_file();
+    return ESP_OK;
 }
 
 void edl_writer_write_cut_debug(uint32_t cut_number,

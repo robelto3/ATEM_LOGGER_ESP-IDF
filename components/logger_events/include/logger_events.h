@@ -34,6 +34,12 @@ esp_err_t logger_events_submit_program_cut(uint8_t old_program_input, uint8_t ne
 // Událost jde do stejné fronty, takže se provede až po předchozích CUT eventech.
 esp_err_t logger_events_submit_new_file(void);
 
+// Synchronní, idempotentní požadavky pro server-to-server API.
+// START při už aktivní session vrátí ESP_OK bez vytvoření dalšího souboru.
+// STOP při neaktivní session vrátí ESP_OK a zachová poslední uzavřený název.
+esp_err_t logger_events_request_edl_start(uint32_t timeout_ms);
+esp_err_t logger_events_request_edl_stop(uint32_t timeout_ms);
+
 uint32_t logger_events_get_dropped_count(void);
 uint32_t logger_events_get_waiting_count(void);
 

@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
@@ -35,6 +36,8 @@
 #define ATEM_CONNECT_RETRY_MS    1000U
 #define ATEM_TIMEOUT_MS          5000U
 #define ATEM_SOCKET_TIMEOUT_MS   50U
+#define ATEM_VIDEO_MODE_RETRY_MS 500U
+#define ATEM_VIDEO_MODE_MAX_ATTEMPTS 3U
 
 // Živé pakety z ATEMu jsou směrodatné pro Program/Preview.
 // Diagnostika je po ověření parseru vypnutá, aby monitor nebyl zahlcený.
@@ -83,12 +86,23 @@ static bool s_missing_init_packets[ATEM_INIT_PACKET_COUNT];
 static uint64_t s_last_contact_ms = 0;
 static uint64_t s_last_connect_try_ms = 0;
 
+static SemaphoreHandle_t s_video_mode_request_mutex = NULL;
+static SemaphoreHandle_t s_video_mode_result_sem = NULL;
+static portMUX_TYPE s_video_mode_request_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_video_mode_request_pending = false;
+static uint8_t s_video_mode_request_value = 0;
+static uint8_t s_video_mode_request_attempts = 0;
+static uint64_t s_video_mode_request_deadline_ms = 0;
+static uint64_t s_video_mode_request_last_send_ms = 0;
+static esp_err_t s_video_mode_request_result = ESP_ERR_INVALID_STATE;
+
 // RX a TX musí být oddělené. ACK nesmí přepsat přijatý packet dřív,
 // než z něj parser přečte ATEM commandy.
 static uint8_t s_packet[ATEM_PACKET_MAX_LEN];
 static uint8_t s_tx_packet[ATEM_PACKET_MAX_LEN];
 
 static void atem_parse_command(const char cmd[5], const uint8_t *payload, uint16_t payload_len);
+static void atem_complete_video_mode_request(esp_err_t result);
 
 static uint64_t atem_now_ms(void)
 {
@@ -98,6 +112,78 @@ static uint64_t atem_now_ms(void)
 static uint16_t atem_read_u16_be(const uint8_t *p)
 {
     return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+const char *atem_control_video_mode_name(uint8_t video_mode)
+{
+    switch (video_mode) {
+    case ATEM_VIDEO_MODE_720P50:
+        return "720p50";
+    case ATEM_VIDEO_MODE_720P5994:
+        return "720p59.94";
+    case ATEM_VIDEO_MODE_1080I50:
+        return "1080i50";
+    case ATEM_VIDEO_MODE_1080I5994:
+        return "1080i59.94";
+    case ATEM_VIDEO_MODE_1080P2398:
+        return "1080p23.98";
+    case ATEM_VIDEO_MODE_1080P24:
+        return "1080p24";
+    case ATEM_VIDEO_MODE_1080P25:
+        return "1080p25";
+    case ATEM_VIDEO_MODE_1080P2997:
+        return "1080p29.97";
+    case ATEM_VIDEO_MODE_1080P50:
+        return "1080p50";
+    case ATEM_VIDEO_MODE_1080P5994:
+        return "1080p59.94";
+    case ATEM_VIDEO_MODE_UHDP2398:
+        return "uhdp23.98";
+    case ATEM_VIDEO_MODE_UHDP24:
+        return "uhdp24";
+    case ATEM_VIDEO_MODE_UHDP25:
+        return "uhdp25";
+    case ATEM_VIDEO_MODE_UHDP2997:
+        return "uhdp29.97";
+    case ATEM_VIDEO_MODE_UHDP50:
+        return "uhdp50";
+    case ATEM_VIDEO_MODE_UHDP5994:
+        return "uhdp59.94";
+    default:
+        return "unknown";
+    }
+}
+
+bool atem_control_video_mode_from_name(const char *name, uint8_t *video_mode)
+{
+    if (!name || !video_mode) {
+        return false;
+    }
+
+    if (strcmp(name, "1080i50") == 0) {
+        *video_mode = ATEM_VIDEO_MODE_1080I50;
+    } else if (strcmp(name, "1080p25") == 0) {
+        *video_mode = ATEM_VIDEO_MODE_1080P25;
+    } else if (strcmp(name, "1080p50") == 0) {
+        *video_mode = ATEM_VIDEO_MODE_1080P50;
+    } else if (strcmp(name, "uhdp25") == 0) {
+        *video_mode = ATEM_VIDEO_MODE_UHDP25;
+    } else if (strcmp(name, "uhdp50") == 0) {
+        *video_mode = ATEM_VIDEO_MODE_UHDP50;
+    } else {
+        return false;
+    }
+
+    return true;
+}
+
+bool atem_control_video_mode_is_supported(const atem_control_status_t *status, uint8_t video_mode)
+{
+    if (!status || !status->video_modes_valid || video_mode >= 32U) {
+        return false;
+    }
+
+    return (status->supported_video_modes & (1UL << video_mode)) != 0U;
 }
 
 static void atem_debug_dump_packet_payload(uint16_t packet_length)
@@ -245,6 +331,73 @@ static void atem_status_set_program_preview(uint16_t program_input, uint16_t pre
     app_state_set_program_preview(pgm, pvw);
 }
 
+static void atem_status_set_product_name(const uint8_t *payload, uint16_t payload_len)
+{
+    char product_name[ATEM_CONTROL_PRODUCT_NAME_LEN] = {0};
+    size_t copy_len = 0;
+
+    while (
+        copy_len < payload_len
+        && copy_len < (sizeof(product_name) - 1U)
+        && payload[copy_len] != '\0'
+    ) {
+        product_name[copy_len] = (char)payload[copy_len];
+        copy_len++;
+    }
+
+    portENTER_CRITICAL(&s_status_mux);
+    memcpy(s_status.product_name, product_name, sizeof(product_name));
+    portEXIT_CRITICAL(&s_status_mux);
+}
+
+static void atem_status_set_protocol_version(uint16_t major, uint16_t minor)
+{
+    portENTER_CRITICAL(&s_status_mux);
+    s_status.protocol_version_major = major;
+    s_status.protocol_version_minor = minor;
+    portEXIT_CRITICAL(&s_status_mux);
+}
+
+static void atem_status_set_supported_video_modes(uint32_t supported_video_modes)
+{
+    portENTER_CRITICAL(&s_status_mux);
+    s_status.video_modes_valid = true;
+    s_status.supported_video_modes = supported_video_modes;
+    portEXIT_CRITICAL(&s_status_mux);
+}
+
+static void atem_status_set_video_mode(uint8_t video_mode)
+{
+    bool changed;
+
+    portENTER_CRITICAL(&s_status_mux);
+    changed = !s_status.video_mode_valid || s_status.video_mode != video_mode;
+    s_status.video_mode_valid = true;
+    s_status.video_mode = video_mode;
+    portEXIT_CRITICAL(&s_status_mux);
+
+    if (changed) {
+        ESP_LOGI(
+            TAG,
+            "ATEM video mode: %s (%u)",
+            atem_control_video_mode_name(video_mode),
+            (unsigned)video_mode
+        );
+    }
+
+    bool request_confirmed;
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    request_confirmed = (
+        s_video_mode_request_pending
+        && s_video_mode_request_value == video_mode
+    );
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+    if (request_confirmed) {
+        atem_complete_video_mode_request(ESP_OK);
+    }
+}
+
 static void atem_status_inc_packets_rx(void)
 {
     portENTER_CRITICAL(&s_status_mux);
@@ -271,6 +424,23 @@ static void atem_status_inc_reconnects(void)
     portENTER_CRITICAL(&s_status_mux);
     s_status.reconnects++;
     portEXIT_CRITICAL(&s_status_mux);
+}
+
+static void atem_complete_video_mode_request(esp_err_t result)
+{
+    bool notify = false;
+
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    if (s_video_mode_request_pending) {
+        s_video_mode_request_pending = false;
+        s_video_mode_request_result = result;
+        notify = true;
+    }
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+    if (notify && s_video_mode_result_sem != NULL) {
+        xSemaphoreGive(s_video_mode_result_sem);
+    }
 }
 
 static void atem_clear_tx_packet(void)
@@ -364,6 +534,81 @@ static void atem_send_first_hello_ack(void)
     (void)atem_send_packet(12);
 }
 
+static esp_err_t atem_send_video_mode_command(uint8_t video_mode)
+{
+    const uint16_t packet_length = 24U;
+    const uint16_t command_length = 12U;
+
+    atem_clear_tx_packet();
+    atem_create_header(ATEM_ACK_REQUEST, packet_length, 0);
+    s_tx_packet[12] = (uint8_t)(command_length >> 8);
+    s_tx_packet[13] = (uint8_t)(command_length & 0xFFU);
+    memcpy(&s_tx_packet[16], "CVdM", 4U);
+    s_tx_packet[20] = video_mode;
+
+    ESP_LOGI(
+        TAG,
+        "Requesting ATEM video mode %s (%u)",
+        atem_control_video_mode_name(video_mode),
+        (unsigned)video_mode
+    );
+    return atem_send_packet(packet_length);
+}
+
+static void atem_process_video_mode_request(void)
+{
+    uint64_t now_ms = atem_now_ms();
+    bool pending;
+    uint8_t video_mode;
+    uint8_t attempts;
+    uint64_t deadline_ms;
+    uint64_t last_send_ms;
+
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    pending = s_video_mode_request_pending;
+    video_mode = s_video_mode_request_value;
+    attempts = s_video_mode_request_attempts;
+    deadline_ms = s_video_mode_request_deadline_ms;
+    last_send_ms = s_video_mode_request_last_send_ms;
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+    if (!pending) {
+        return;
+    }
+
+    if (now_ms >= deadline_ms) {
+        atem_complete_video_mode_request(ESP_ERR_TIMEOUT);
+        return;
+    }
+
+    if (!s_connected) {
+        if (attempts == 0U) {
+            atem_complete_video_mode_request(ESP_ERR_INVALID_STATE);
+        }
+        return;
+    }
+
+    if (
+        attempts >= ATEM_VIDEO_MODE_MAX_ATTEMPTS
+        || (attempts > 0U && (now_ms - last_send_ms) < ATEM_VIDEO_MODE_RETRY_MS)
+    ) {
+        return;
+    }
+
+    esp_err_t ret = atem_send_video_mode_command(video_mode);
+
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    if (s_video_mode_request_pending && s_video_mode_request_value == video_mode) {
+        s_video_mode_request_attempts++;
+        s_video_mode_request_last_send_ms = now_ms;
+    }
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+    if (ret != ESP_OK && (attempts + 1U) >= ATEM_VIDEO_MODE_MAX_ATTEMPTS) {
+        atem_complete_video_mode_request(ret);
+    }
+}
+
 static uint16_t atem_decode_source_from_prgi_prvi_payload(const uint8_t *payload, uint16_t payload_len)
 {
     if (!payload) {
@@ -417,6 +662,45 @@ static void atem_parse_command(const char cmd[5], const uint8_t *payload, uint16
         s_debug_command_logs++;
     }
 #endif
+
+    if (strcmp(cmd, "_pin") == 0) {
+        atem_status_set_product_name(payload, payload_len);
+        return;
+    }
+
+    if (strcmp(cmd, "_ver") == 0 && payload_len >= 4U) {
+        atem_status_set_protocol_version(
+            atem_read_u16_be(&payload[0]),
+            atem_read_u16_be(&payload[2])
+        );
+        return;
+    }
+
+    if (strcmp(cmd, "_VMC") == 0 && payload_len >= 4U) {
+        const uint16_t entry_size = 13U;
+        uint16_t entry_count = atem_read_u16_be(&payload[0]);
+        uint16_t available_entries = (uint16_t)((payload_len - 4U) / entry_size);
+        uint32_t supported_video_modes = 0U;
+
+        if (entry_count > available_entries) {
+            entry_count = available_entries;
+        }
+
+        for (uint16_t i = 0; i < entry_count; i++) {
+            uint8_t video_mode = payload[4U + (i * entry_size)];
+            if (video_mode < 32U) {
+                supported_video_modes |= (1UL << video_mode);
+            }
+        }
+
+        atem_status_set_supported_video_modes(supported_video_modes);
+        return;
+    }
+
+    if (strcmp(cmd, "VidM") == 0 && payload_len >= 1U) {
+        atem_status_set_video_mode(payload[0]);
+        return;
+    }
 
     if ((strcmp(cmd, "PrgI") == 0) || (strcmp(cmd, "_Prg") == 0)) {
         uint16_t pgm = atem_decode_source_from_prgi_prvi_payload(payload, payload_len);
@@ -689,6 +973,8 @@ static void atem_task(void *arg)
             atem_send_connect_packet();
         }
 
+        atem_process_video_mode_request();
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -697,6 +983,24 @@ esp_err_t atem_control_init(void)
 {
     if (s_task_handle != NULL) {
         return ESP_OK;
+    }
+
+    if (s_video_mode_request_mutex == NULL) {
+        s_video_mode_request_mutex = xSemaphoreCreateMutex();
+    }
+    if (s_video_mode_result_sem == NULL) {
+        s_video_mode_result_sem = xSemaphoreCreateBinary();
+    }
+    if (s_video_mode_request_mutex == NULL || s_video_mode_result_sem == NULL) {
+        if (s_video_mode_request_mutex != NULL) {
+            vSemaphoreDelete(s_video_mode_request_mutex);
+            s_video_mode_request_mutex = NULL;
+        }
+        if (s_video_mode_result_sem != NULL) {
+            vSemaphoreDelete(s_video_mode_result_sem);
+            s_video_mode_result_sem = NULL;
+        }
+        return ESP_ERR_NO_MEM;
     }
 
     memset(&s_status, 0, sizeof(s_status));
@@ -732,4 +1036,76 @@ void atem_control_get_status(atem_control_status_t *status)
     portENTER_CRITICAL(&s_status_mux);
     *status = s_status;
     portEXIT_CRITICAL(&s_status_mux);
+}
+
+esp_err_t atem_control_set_video_mode(uint8_t video_mode, uint32_t timeout_ms)
+{
+    if (
+        timeout_ms == 0U
+        || s_video_mode_request_mutex == NULL
+        || s_video_mode_result_sem == NULL
+    ) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (strcmp(atem_control_video_mode_name(video_mode), "unknown") == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ticks == 0U) {
+        timeout_ticks = 1U;
+    }
+
+    if (xSemaphoreTake(s_video_mode_request_mutex, timeout_ticks) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    atem_control_status_t status;
+    atem_control_get_status(&status);
+
+    esp_err_t result = ESP_OK;
+    if (!status.connected || !status.initialized || !status.video_mode_valid) {
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+
+    if (status.video_mode == video_mode) {
+        goto done;
+    }
+
+    if (!atem_control_video_mode_is_supported(&status, video_mode)) {
+        result = ESP_ERR_NOT_SUPPORTED;
+        goto done;
+    }
+
+    while (xSemaphoreTake(s_video_mode_result_sem, 0) == pdTRUE) {
+    }
+
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    s_video_mode_request_value = video_mode;
+    s_video_mode_request_attempts = 0U;
+    s_video_mode_request_deadline_ms = atem_now_ms() + timeout_ms;
+    s_video_mode_request_last_send_ms = 0U;
+    s_video_mode_request_result = ESP_ERR_TIMEOUT;
+    s_video_mode_request_pending = true;
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+    if (xSemaphoreTake(s_video_mode_result_sem, timeout_ticks) != pdTRUE) {
+        portENTER_CRITICAL(&s_video_mode_request_mux);
+        if (s_video_mode_request_pending && s_video_mode_request_value == video_mode) {
+            s_video_mode_request_pending = false;
+        }
+        portEXIT_CRITICAL(&s_video_mode_request_mux);
+        result = ESP_ERR_TIMEOUT;
+        goto done;
+    }
+
+    portENTER_CRITICAL(&s_video_mode_request_mux);
+    result = s_video_mode_request_result;
+    portEXIT_CRITICAL(&s_video_mode_request_mux);
+
+done:
+    xSemaphoreGive(s_video_mode_request_mutex);
+    return result;
 }

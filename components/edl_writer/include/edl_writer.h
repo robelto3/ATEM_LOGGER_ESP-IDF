@@ -21,10 +21,14 @@ extern "C" {
 
 esp_err_t edl_writer_init(void);
 
-void edl_writer_write_header(const char *filename,
-                             const char *title,
-                             const rtc_datetime_t *created_rtc,
-                             bool rtc_valid);
+esp_err_t edl_writer_write_header(const char *filename,
+                                  const char *title,
+                                  const rtc_datetime_t *created_rtc,
+                                  bool rtc_valid);
+
+// Ukončí aktuální EDL výstup. Soubor není držený otevřený mezi zápisy,
+// takže stačí atomicky zakázat další append operace.
+esp_err_t edl_writer_stop(void);
 
 void edl_writer_write_cut_debug(uint32_t cut_number,
                                 uint8_t old_program_input,
